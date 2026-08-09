@@ -1,7 +1,27 @@
 /* ============================================================
    SIESTA SPACES · SIROMS
    ============================================================ */
-const $=id=>document.getElementById(id);
+/* Element lookup.
+   Historically this returned null for a missing element, so a single absent
+   node (e.g. a button removed from the markup) threw inside wire() and every
+   handler registered after it was silently never attached — which is exactly
+   how the Guest Transactions tabs stopped responding.
+   $() now returns an inert stub for missing elements: assigning handlers or
+   properties to it is a harmless no-op, so wire() always runs to completion.
+   The stub carries __missing:true and logs a one-time console warning. */
+const _warned=new Set();
+function _stub(id){
+ if(!_warned.has(id)){_warned.add(id);console.warn(`[SIROMS] #${id} not found in the DOM — related handler skipped.`);}
+ // A permissive object: property writes are absorbed, reads return safe values.
+ return new Proxy({__missing:true,id,style:{},dataset:{},classList:{add(){},remove(){},toggle(){},contains(){return false}},
+   value:'',textContent:'',innerHTML:'',options:[],checked:false,disabled:false,
+   focus(){},click(){},querySelector(){return null},querySelectorAll(){return []},
+   addEventListener(){},removeEventListener(){},dispatchEvent(){return false},appendChild(a){return a},reset(){}},{
+   get(t,p){ if(p in t)return t[p]; if(typeof p==='string'&&p.startsWith('on'))return null; return undefined; },
+   set(){ return true; }   // absorb handler assignments without throwing
+ });
+}
+const $=id=>document.getElementById(id)||_stub(id);
 const money=n=>`${n<0?'-':''}₱${Math.abs(Math.round(n)).toLocaleString('en-PH')}`;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 

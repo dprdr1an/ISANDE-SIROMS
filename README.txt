@@ -146,3 +146,39 @@ Changes
     > 14 (H3).
   - New v10 CSS layer only; palette, typography, sidebar, buttons,
     cards, component styling, functionality and working layouts kept.
+
+------------------------------------------------------------
+GUEST TRANSACTIONS TAB FIX (v11)
+------------------------------------------------------------
+Symptom
+  On Guest Transactions, the "Reserved Guest" tab appeared to work but
+  "Walk-in" and "Check-out" did nothing.
+
+Root cause (not a tab problem at all)
+  wire() registers every event handler in one pass. Line ~1678 read
+  $('addReservation') — a button that had been removed from index.html
+  during an earlier layout change. $() returned null, so
+  `null.onclick = ...` threw, and wire() aborted at that point.
+  Every handler registered AFTER that line was therefore never attached,
+  including the tab handler a few lines below. Reserved Guest only looked
+  functional because its panel carries class="active" in the markup.
+  The data-transaction values, panel IDs and CSS were all correct.
+
+Fix
+  1. Restored the missing "+ New Reservation" button on the Reservations
+     page (front desk needs the action there anyway).
+  2. Hardened $(): it now returns an inert stub instead of null when an
+     element is missing. Handler assignments to the stub are absorbed, so
+     a single absent node can never again silently kill every handler
+     registered after it. A one-time console warning names the missing id.
+
+Verified
+  - All three tabs switch correctly; exactly one panel visible at a time
+    and the selected tab gets the active styling.
+  - Walk-in end to end: form -> room selection -> payment -> room and
+    guest records update, reservation + transaction written.
+  - Check-out end to end: guest loads, inspection required before final
+    checkout, checkout blocked while inspection pending, damages applied
+    against the deposit, room set to cleaning and a cleaning task created.
+  - Swept every button/select/tab across all 5 roles: no dead controls.
+  - Broad regression (nav, filters, searches, modals, workflows): 69 checks.
