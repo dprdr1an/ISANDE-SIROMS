@@ -279,20 +279,22 @@ function applyRole(){
  $('attendanceButton').textContent=isTimedIn?'Time out':'Time in';
  go('dashboard');renderAll();
 }
+// Each page has ONE title (H1, shown in the topbar) and a supporting subtitle.
+// The subtitle carries the fuller description so no in-page title needs to repeat it.
 const PAGE_META={
  dashboard:['Operations Dashboard','Live shift overview'],
- reservations:['Reservations','Bookings and arrivals'],
- rooms:['Rooms','Live room status across all floors'],
- checkin:['Guest Transactions','Check-in, walk-in and check-out'],
- housekeeping:['Housekeeping','Cleaning workflow and inspections'],
- inspection:['Room Inspections','Checkout inspections before departure'],
- incidents:['Incident Reports','Damages, missing items and incidents'],
- maintenance:['Maintenance','Work orders and repair history'],
- requests:['Guest Requests','Extra items requested by guests'],
- lostfound:['Lost & Found','Items found on the property'],
- inventory:['Inventory','Housekeeping supplies and stock control'],
- transactions:['Payment Transactions','All recorded guest payments'],
- reports:['Reports','Operational and financial performance']
+ reservations:['Reservations','Bookings from connected sites and reservations taken at the front desk.'],
+ rooms:['Rooms','Live status across all floors. Standard rooms sleep 2, family rooms sleep 4.'],
+ checkin:['Guest Transactions','Check in a reservation, register a walk-in, or check out a guest.'],
+ housekeeping:['Housekeeping','Track every room from assignment through supervisor inspection.'],
+ inspection:['Room Inspections','Checkout inspections before a guest can be checked out.'],
+ incidents:['Incident Reports','Damages, missing items and incidents from checkout inspections.'],
+ maintenance:['Maintenance','Work orders assessed by the supervisor and assigned to technicians.'],
+ requests:['Guest Requests','Extra items requested by in-house guests.'],
+ lostfound:['Lost & Found','Any staff member can log an item; only the front desk can release one.'],
+ inventory:['Inventory','Housekeeping supplies and stock levels.'],
+ transactions:['Payment Transactions','Every recorded guest payment, filterable by date, method and type.'],
+ reports:['Reports','Performance across rooms, revenue, housekeeping, maintenance and supplies.']
 };
 function go(page){
  if(!currentUser||!permissions[currentUser.role].includes(page))page='dashboard';
@@ -314,6 +316,12 @@ function go(page){
  if(page==='transactions')renderTransactions();
  if(page==='reports')renderReports();
  window.scrollTo({top:0,behavior:'smooth'});
+}
+// Update the topbar subtitle for a page when its content sets a role-specific
+// description. Only applies when that page is the one currently shown.
+function setPageSubtitle(page,text){
+ const active=document.querySelector('.page.active');
+ if(active&&active.id===page)$('pageSubtitle').textContent=text;
 }
 
 /* ============================================================
@@ -1002,8 +1010,7 @@ function taskActions(t){
 }
 function renderTasks(){
  const isHk=currentUser.role==='housekeeper';
- $('hkTitle').textContent=isHk?`My Tasks · ${currentUser.name}`:'Housekeeping Task Board';
- $('hkSubtitle').textContent=isHk?'Only rooms assigned to you. Move each one through the workflow as you go.':'Every room from assignment through supervisor inspection.';
+ setPageSubtitle('housekeeping',isHk?`Your assigned rooms, ${currentUser.name.split(' ')[0]}. Move each one through the workflow as you go.`:'Track every room from assignment through supervisor inspection.');
  const visible=isHk?myTasks():tasks;
  $('hkStats').innerHTML=statCards(TASK_FLOW.map(s=>{
    const n=visible.filter(t=>t.status===s).length;
@@ -1099,9 +1106,9 @@ function renderInspections(){
  const active=inspectionRooms();
  const doneToday=incidents.filter(i=>i.date.slice(0,10)===T);
  const canInspect=['housekeeper','supervisor'].includes(currentUser.role);
- $('inspSubtitle').textContent=canInspect
-   ?'Inspect each room before its guest is checked out. Record any damages, missing items or incidents.'
-   :'Rooms awaiting a checkout inspection by housekeeping.';
+ setPageSubtitle('inspection',canInspect
+   ?'Inspect each room before its guest checks out. Record any damages, missing items or incidents.'
+   :'Rooms awaiting a checkout inspection by housekeeping.');
  $('inspStats').innerHTML=statCards([
    ['Awaiting inspection',active.length,'guests pending checkout',active.length?'warn':''],
    ['Incidents today',doneToday.length,'raised during inspections'],
@@ -1290,7 +1297,7 @@ function renderTickets(){
    $('ticketCategoryFilter').innerHTML='<option value="all">All categories</option>'+cats.map(c=>`<option>${c}</option>`).join('');
  const sf=$('ticketStatusFilter').value,pf=$('ticketPriorityFilter').value,cf=$('ticketCategoryFilter').value;
  const isSup=currentUser.role==='supervisor';
- $('maintenanceSubtitle').textContent=isSup?'Assess reported issues, then forward them to a technician.':'Work orders assessed by the housekeeping supervisor.';
+ setPageSubtitle('maintenance',isSup?'Assess reported issues, then forward them to a technician.':'Work orders assessed by the supervisor and assigned to technicians.');
 
  $('maintenanceStats').innerHTML=statCards([
    ['Awaiting assessment',tickets.filter(t=>t.stage==='assessment').length,'with the supervisor',tickets.filter(t=>t.stage==='assessment').length&&isSup?'warn':''],
@@ -1457,9 +1464,9 @@ function renderLostFound(){
    ============================================================ */
 function renderInventory(){
  const canEdit=canManageInventory();
- $('inventorySubtitle').textContent=canEdit
+ setPageSubtitle('inventory',canEdit
   ?'Add items, record stock movements, and keep levels above the reorder point.'
-  :'View-only. Ask your supervisor to record any stock movement, or send a restock request.';
+  :'View-only. Ask your supervisor to record a stock movement, or send a restock request.');
  document.querySelectorAll('.inventory-manage').forEach(e=>e.style.display=canEdit?'':'none');
  $('inventoryStats').innerHTML=statCards([
    ['Tracked items',inventory.length,'in the store room'],

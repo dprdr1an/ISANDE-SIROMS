@@ -395,3 +395,47 @@ th,td{padding:12px var(--sp-2)}
 
 /* Keep dashboard header actions from crowding the greeting on mid widths */
 @media(max-width:900px){.role-dashboard-header{flex-direction:column;align-items:flex-start}.role-dashboard-header .header-actions{width:100%}}
+
+/* ============================================================
+   v10 — Heading hierarchy & duplicate-title cleanup
+   The topbar is the single page header (H1). In-page sections use
+   panel headings (H2). This layer defines the actions row that
+   replaces the old duplicate page-title toolbars, and locks in a
+   consistent heading scale. Palette and components unchanged.
+   ============================================================ */
+
+/* Page-actions: a lean row for buttons/filters that used to sit beside a
+   duplicated page title. No heading here — the topbar already names the page. */
+.page-actions{display:flex;justify-content:flex-end;align-items:center;gap:var(--sp-1,8px);flex-wrap:wrap;margin-bottom:var(--sp-3,24px)}
+.page-actions .filter-row{flex-wrap:wrap}
+/* When a page opens directly with stat cards under the actions row, keep the
+   gap tight so the row doesn't float. */
+.page-actions + .stats-grid{margin-top:0}
+/* If a page has no actions at all, the row collapses cleanly. */
+.page-actions:empty{display:none;margin:0}
+
+/* Heading hierarchy scale ---------------------------------------------------
+   H1  topbar page title ...... 24px (.page-title-wrap h2)  — one per page
+   H2  section / panel heading  17px (.panel-header h3)      — real sections
+   H3  subsection / card head   14px (h4)                    — inside sections
+   Kept intentionally distinct so the page title never competes with a
+   section heading below it. */
+.page-title-wrap h2{font-size:24px;font-weight:700;line-height:1.2}
+.page-title-wrap p{font-size:13px;margin-top:4px}
+/* Any in-page section heading that remains (panel headers) reads as H2. */
+.panel-header h3{font-size:17px;font-weight:700;line-height:1.25}
+.panel-header p{font-size:12px;margin-top:4px}
+/* Card / subsection headings read as H3, clearly below section headings. */
+.item-card h4,.task-card h4,.ticket-card h4{font-size:14px;font-weight:700}
+
+/* Consistent spacing between the page header area and first content block.
+   The topbar has fixed height; the first block gets a small, even top gap. */
+.page > .stats-grid:first-child,
+.page > .page-actions:first-child{margin-top:4px}
+
+/* Slim toolbars (search + filters, no title) keep a consistent rhythm. */
+.section-toolbar.slim-toolbar{margin-bottom:var(--sp-2,16px)}
+
+/* Dashboard greeting is a welcoming section header, not a second page title:
+   keep it at/below the 24px page title so hierarchy reads top-down. */
+.role-dashboard-header h3{font-size:22px;margin:6px 0 6px;line-height:1.2}

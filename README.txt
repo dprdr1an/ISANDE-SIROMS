@@ -110,3 +110,39 @@ UI consistency
   - Added an 8 / 16 / 24px spacing layer standardising padding across
     forms, cards, tables, modals, buttons and dashboards; added
     focus-visible outlines. Palette, layout and components unchanged.
+
+------------------------------------------------------------
+UI HIERARCHY & DUPLICATE-TITLE REFACTOR (v10)
+------------------------------------------------------------
+Problem
+  The topbar shows each page's title (from PAGE_META), and most pages
+  then repeated that same title again as an in-page section heading —
+  e.g. "Guest Transactions" appeared in the topbar AND directly below it.
+  An audit found this on 10 pages: Reservations, Rooms, Guest
+  Transactions, Room Inspections, Incident Reports, Maintenance,
+  Lost & Found, Inventory, Payment Transactions and Reports.
+
+Hierarchy now used on every page
+  H1  Page title ......... topbar only (one per page), with a supporting
+                           subtitle underneath.
+  H2  Section heading .... panel headers for genuinely distinct sections
+                           (e.g. "Reserved Guest Check-in", "Booking
+                           Summary", "Record Guest Request", report panels).
+  H3  Subsection ......... card / list headings inside a section.
+
+Changes
+  - PAGE_META subtitles enriched so the fuller description lives in the
+    topbar; no information was lost when the in-page copy was removed.
+  - The duplicate title block was removed from every page's toolbar and
+    replaced with a lean ".page-actions" row that keeps the buttons,
+    filters and tabs but carries no redundant heading.
+  - Role-specific descriptions that used to sit in-page (housekeeping,
+    inspection, maintenance, inventory) now update the topbar subtitle
+    via setPageSubtitle(); the orphaned elements were removed.
+  - Genuine section headings were kept intact.
+  - Dashboard greeting reduced to 22px so it no longer renders larger
+    than the 24px page title (fixes "page title smaller than section
+    title"). Heading scale locked: 24 (H1) > 22 (greeting) > 17 (H2)
+    > 14 (H3).
+  - New v10 CSS layer only; palette, typography, sidebar, buttons,
+    cards, component styling, functionality and working layouts kept.
