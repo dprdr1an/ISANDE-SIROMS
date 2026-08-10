@@ -1,0 +1,28 @@
+{
+  "name": "siroms",
+  "version": "2.0.0",
+  "description": "Siesta Spaces Integrated Room Operations Management System \u2014 MongoDB-backed",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "nodemon server/server.js",
+    "seed": "node server/seed/seed.js",
+    "seed:fresh": "node server/seed/seed.js --drop",
+    "test": "node tests/run.js",
+    "test:seed": "node tests/seed-dryrun.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "express-session": "^1.19.0",
+    "mongoose": "^8.24.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
