@@ -1,6 +1,6 @@
 'use strict';
 const mongoose = require('mongoose');
-const { TASK_FLOW, TASK_TYPES, TASK_KINDS, PRIORITIES } = require('./constants');
+const { TASK_FLOW, TASK_TYPES, TASK_KINDS, TASK_PRIORITIES } = require('./constants');
 
 const checklistItemSchema = new mongoose.Schema({
   label:   { type: String, required: true },
@@ -13,7 +13,7 @@ const housekeepingTaskSchema = new mongoose.Schema({
 
   type: { type: String, enum: TASK_TYPES, default: 'Checkout cleaning' },
   kind: { type: String, enum: TASK_KINDS, default: 'cleaning', index: true },
-  priority: { type: String, enum: PRIORITIES, default: 'Medium' },
+  priority: { type: String, enum: TASK_PRIORITIES, default: 'Medium' },
   note: { type: String, default: '' },
 
   assignedTo:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },

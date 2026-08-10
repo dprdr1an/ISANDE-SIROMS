@@ -9,7 +9,11 @@
     "seed": "node server/seed/seed.js",
     "seed:fresh": "node server/seed/seed.js --drop",
     "test": "node tests/run.js",
-    "test:seed": "node tests/seed-dryrun.js"
+    "test:seed": "node tests/seed-dryrun.js",
+    "seed:demo": "node server/seed/demo.js",
+    "test:demo": "node tests/demo-dryrun.js",
+    "test:hk": "node tests/housekeeping-e2e.js",
+    "test:requests": "node tests/requests-e2e.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -20,6 +24,7 @@
     "mongoose": "^8.24.2"
   },
   "devDependencies": {
+    "jsdom": "^29.1.1",
     "nodemon": "^3.1.4"
   },
   "engines": {

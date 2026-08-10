@@ -19,9 +19,17 @@ const BOOKING_STATUSES = [
 ];
 
 const TASK_FLOW = ['Assigned', 'In Progress', 'Ready for Inspection', 'Completed'];
-const TASK_TYPES = ['Checkout cleaning', 'Daily cleaning', 'Deep cleaning', 'Turnover', 'Checkout inspection'];
+// Task types accepted by the Housekeeping module. The last three were already
+// offered by the Assign Task form but were missing from this enum, so any task
+// created with them was rejected by the API. Added, not renamed — no existing
+// value was removed, so all existing documents stay valid.
+const TASK_TYPES = ['Checkout cleaning', 'Daily cleaning', 'Deep cleaning', 'Turnover', 'Checkout inspection',
+                    'Stay-over cleaning', 'Recleaning', 'Guest item delivery'];
 const TASK_KINDS = ['cleaning', 'inspection'];
 const PRIORITIES = ['High', 'Medium', 'Low'];
+// Housekeeping uses a superset: the Assign Task form offers Urgent/Normal.
+// Kept separate so maintenance ticket priorities are unchanged.
+const TASK_PRIORITIES = ['Urgent', 'High', 'Normal', 'Medium', 'Low'];
 
 const REQUEST_STATUSES = ['Pending', 'Assigned', 'In delivery', 'Delivered', 'Cancelled'];
 
@@ -50,7 +58,7 @@ const DEPOSIT = 1000;
 
 module.exports = {
   ROLES, ROOM_STATUSES, BOOKING_STATUSES, TASK_FLOW, TASK_TYPES, TASK_KINDS,
-  PRIORITIES, REQUEST_STATUSES, INSPECTION_STATUSES, INCIDENT_CATEGORIES,
+  PRIORITIES, TASK_PRIORITIES, REQUEST_STATUSES, INSPECTION_STATUSES, INCIDENT_CATEGORIES,
   INCIDENT_STATUSES, TICKET_STAGES, TICKET_STATUSES, LOSTFOUND_STATUSES,
   TX_TYPES, PAYMENT_METHODS, ROOM_TYPES, DEPOSIT
 };

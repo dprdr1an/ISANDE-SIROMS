@@ -59,7 +59,10 @@ const canManageInventory=()=>['supervisor','manager'].includes(currentUser.role)
 
 const ROOM_TYPES={Standard:{beds:'2 single beds',cap:2,rate:1800},Family:{beds:'4 single beds',cap:4,rate:2600}};
 const DEPOSIT=1000;
-const housekeepers=['Ana Cruz','Joy Ramos','Mika Ong','Carla Reyes'];
+/* Housekeeper roster comes from the database (GET /api/users?role=housekeeper).
+   Entries are {id,name}; `hkNames()` gives the plain names older code expects. */
+let housekeepers=[];
+const hkNames=()=>housekeepers.map(h=>h.name);
 const technicians=['Carlo Diaz','Rey Molina'];
 
 /* ---------------- Rooms & in-house stays ---------------- */
@@ -137,15 +140,10 @@ const onlineBookings=[
 
 /* ---------------- Housekeeping tasks ---------------- */
 const TASK_FLOW=['Assigned','In Progress','Ready for Inspection','Completed'];
-const tasks=[
- {id:nextId(),room:'301',staff:'Ana Cruz',priority:'High',type:'Checkout cleaning',note:'Guest departed 10:05 AM',status:'Assigned',assignedAt:nowISO()},
- {id:nextId(),room:'102',staff:'Joy Ramos',priority:'Normal',type:'Stay-over cleaning',note:'',status:'Assigned',assignedAt:nowISO()},
- {id:nextId(),room:'204',staff:'Ana Cruz',priority:'Normal',type:'Checkout cleaning',note:'',status:'In Progress',assignedAt:nowISO(),startedAt:nowISO()},
- {id:nextId(),room:'202',staff:'Joy Ramos',priority:'Normal',type:'Checkout cleaning',note:'',status:'Ready for Inspection',assignedAt:nowISO(),startedAt:nowISO(),submittedAt:nowISO()},
- {id:nextId(),room:'105',staff:'Mika Ong',priority:'Normal',type:'Stay-over cleaning',note:'',status:'Completed',assignedAt:nowISO(),startedAt:nowISO(),submittedAt:nowISO(),completedAt:nowISO(),inspection:{result:'Approved',by:'Liza Mendoza',note:'Passed on first check.'}},
- {id:nextId(),room:'303',staff:'Mika Ong',priority:'Normal',type:'Checkout cleaning',note:'',status:'Completed',assignedAt:nowISO(),startedAt:nowISO(),submittedAt:nowISO(),completedAt:nowISO(),inspection:{result:'Approved',by:'Liza Mendoza',note:''}},
- {id:nextId(),room:'106',staff:'Carla Reyes',priority:'Normal',type:'Deep cleaning',note:'',status:'Completed',assignedAt:nowISO(),startedAt:nowISO(),submittedAt:nowISO(),completedAt:nowISO(),inspection:{result:'Approved',by:'Liza Mendoza',note:'Re-checked after touch-up.',reworked:true}}
-];
+/* Housekeeping tasks are owned by MongoDB. Hydrated by loadHousekeeping()
+   from GET /api/housekeeping/tasks — never seeded or mutated locally. */
+let tasks=[];
+
 const INSPECT_CHECKS=['Beds made and linen changed','Bathroom cleaned and restocked','Floors and surfaces cleaned','Amenities complete','No damage or maintenance issues'];
 
 /* ---------------- Maintenance ---------------- */
@@ -165,11 +163,11 @@ const REQUEST_CATALOG=[
  {name:'Power adapter',price:0},{name:'Baby crib',price:300},{name:'Extra mattress',price:500},
  {name:'Bottled water',price:80},{name:'Laundry service',price:250},{name:'Other',price:0}
 ];
-const guestRequests=[
- {id:nextId(),room:'104',guest:'Patricia Tan',items:[{name:'Extra mattress',qty:1,price:500}],notes:'',status:'In delivery',createdAt:nowISO(),by:'Anne Reyes'},
- {id:nextId(),room:'206',guest:'Sam Lim',items:[{name:'Additional towels',qty:2,price:0},{name:'Extra pillow',qty:2,price:0}],notes:'Family of five',status:'Pending',createdAt:nowISO(),by:'Anne Reyes'},
- {id:nextId(),room:'203',guest:'Ken Ong',items:[{name:'Baby crib',qty:1,price:300}],notes:'Set up before 8 PM',status:'Delivered',createdAt:isoLocal(dayOff(-1)),by:'Anne Reyes'}
-];
+/* Guest requests are owned by MongoDB. Hydrated by loadHousekeeping() from
+   GET /api/guest-requests — the SAME document the Housekeeping board renders,
+   so the two modules can never disagree. */
+let guestRequests=[];
+
 
 /* ---------------- Lost & found ---------------- */
 const lostItems=[
@@ -276,14 +274,41 @@ function initLogin(){
  $('demoDirectory').innerHTML=Object.entries(accounts).map(([pin,a])=>`<li><button type="button" class="demo-pin" data-pin="${pin}"><strong>${pin}</strong> ${a.name}<span>${a.label}</span></button></li>`).join('');
  document.querySelectorAll('.demo-pin').forEach(b=>b.onclick=()=>{$('employeePin').value=b.dataset.pin;doLogin(b.dataset.pin);});
 }
-function doLogin(pin){
- const a=accounts[pin];
- if(!a){$('loginError').classList.remove('hidden');return;}
- $('loginError').classList.add('hidden');
- currentUser=a;isTimedIn=true;attendanceLocked=false;
- document.body.className='logged-in';
- applyRole();
- showToast(`Welcome, ${a.name.split(' ')[0]}. Time-in recorded.`);
+/* Sign in against the API so the session cookie exists for every later
+   request. If the server or database is unreachable we say so — we never fall
+   back to local data and pretend the login worked. */
+async function doLogin(pin){
+  const errBox=$('loginError');
+  try {
+    const user=await SIROMS.login(pin);
+    errBox.classList.add('hidden');
+    currentUser={
+      _id:user._id, name:user.name, role:user.role,
+      label:user.title||user.role,
+      initials:user.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
+    };
+    isTimedIn=true;attendanceLocked=false;
+    document.body.className='logged-in';
+    await loadHousekeeping();          // pull MongoDB state before first render
+    applyRole();
+    showToast(`Welcome, ${currentUser.name.split(' ')[0]}. Time-in recorded.`);
+  } catch(err){
+    const msg=err && err.message ? err.message : 'Sign-in failed.';
+    errBox.textContent=msg;
+    errBox.classList.remove('hidden');
+  }
+}
+/* Reload path: a valid session already exists, so skip the PIN round-trip. */
+async function doLoginFromSession(user){
+  currentUser={
+    _id:user._id, name:user.name, role:user.role,
+    label:user.title||user.role,
+    initials:user.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
+  };
+  isTimedIn=true;
+  document.body.className='logged-in';
+  try { await loadHousekeeping(); } catch(e){ showToast('Could not load housekeeping data.'); }
+  applyRole();
 }
 function applyRole(){
  $('profileName').textContent=currentUser.name;
@@ -465,7 +490,7 @@ function svDash(head){
    ${panel('Cleaning Performance','Quality and throughput this shift',
      progressRow('Rooms completed',completed.length,tasks.length)
      +progressRow('Passed first inspection',firstPass,completed.length||1)
-     +`<div class="metric-list tight"><div><span>Average rooms per housekeeper</span><strong>${(tasks.length/housekeepers.length).toFixed(1)}</strong></div><div><span>Rooms returned for recleaning</span><strong>${completed.filter(t=>t.inspection?.reworked).length}</strong></div></div>`)}
+     +`<div class="metric-list tight"><div><span>Average rooms per housekeeper</span><strong>${housekeepers.length?(tasks.length/housekeepers.length).toFixed(1):'0.0'}</strong></div><div><span>Rooms returned for recleaning</span><strong>${completed.filter(t=>t.inspection?.reworked).length}</strong></div></div>`)}
    ${panel('Inventory Alerts','Items at or below reorder level',
      low.length?`<div class="list-rows">${low.map(i=>`<div class="list-row"><div class="lr-main"><strong>${esc(i.item)}</strong><p>${i.category}</p></div><div class="lr-side"><strong class="warn-text">${i.stock}</strong><small>reorder at ${i.reorder}</small></div></div>`).join('')}</div>`:emptyState('All supplies are above reorder level.'),
      `<button class="text-button" data-go="inventory">Manage</button>`)}
@@ -473,7 +498,7 @@ function svDash(head){
  ${assess.length?`<div class="mt">${panel('Issues Awaiting Your Assessment','Set priority and room impact before these reach maintenance',`<div class="list-rows">${assess.map(t=>`<div class="list-row"><div class="lr-main"><strong>Room ${t.room} · ${esc(t.issue)}</strong><p>${t.category} · reported by ${esc(t.reportedBy)}</p></div><button class="mini-button primary" data-assess="${t.id}">Assess</button></div>`).join('')}</div>`)}</div>`:''}`;
 }
 function workloadBars(){
- const counts=housekeepers.map(h=>[h,tasks.filter(t=>t.staff===h&&t.status!=='Completed').length]);
+ const counts=hkNames().map(h=>[h,tasks.filter(t=>t.staff===h&&t.status!=='Completed').length]);
  const max=Math.max(1,...counts.map(c=>c[1]));
  return `<div class="workload-list">${counts.map(([h,c])=>`<div class="workload-row"><span class="wl-name">${h}</span><div class="wl-bar"><i style="width:${c/max*100}%"></i></div><span class="wl-count">${c} active</span><span class="wl-flag ${c===0?'idle':c>=max&&max>1?'busy':'ok'}">${c===0?'Free':c>=max&&max>1?'Busiest':'Balanced'}</span></div>`).join('')}</div>`;
 }
@@ -1006,6 +1031,22 @@ function taskRow(t){
 }
 function taskActions(t){
  const r=currentUser.role;
+ /* Guest requests use their own progression:
+    Assigned → In delivery → Delivered. They are never pushed through the
+    cleaning flow or sent to supervisor inspection. */
+ if(t.kind==='request'){
+   const mine=t.staff===currentUser.name;
+   if(r==='housekeeper'&&mine){
+     if(t.status==='Assigned'||t.status==='Pending')
+       return `<button class="mini-button primary" data-request-advance="${t.id}">Start delivery</button>`;
+     if(t.status==='In delivery')
+       return `<button class="mini-button primary" data-request-advance="${t.id}">Mark delivered</button>`;
+     return `<span class="await-note ok-text">Delivered</span>`;
+   }
+   if(['supervisor','manager'].includes(r)&&t.status!=='Delivered')
+     return `<span class="await-note">${t.status} · ${esc(t.staff)}</span>`;
+   return `<span class="await-note ${t.status==='Delivered'?'ok-text':''}">${t.status}</span>`;
+ }
  // Checkout-inspection tasks open the inspection form directly (for HK & supervisor).
  if(t.kind==='inspection'){
    if(['housekeeper','supervisor'].includes(r)&&t.status!=='Completed'){
@@ -1028,25 +1069,135 @@ function taskActions(t){
  }
  return `<span class="await-note">${t.status}</span>`;
 }
+/* ============================================================
+   HOUSEKEEPING — MongoDB data access
+   MongoDB is the single source of truth. `tasks` is a render buffer:
+   it is only ever replaced by a server read, never edited locally.
+   ============================================================ */
+
+// Map a HousekeepingTask document onto the shape the board renders.
+function mapTask(d){
+  return {
+    id: d._id,                                  // Mongo _id (string, not numeric)
+    room: d.roomNumber,
+    staff: d.assignedToName || 'Unassigned',
+    assignedTo: d.assignedTo && (d.assignedTo._id || d.assignedTo),
+    priority: d.priority,
+    type: d.type,
+    note: d.note || '',
+    status: d.status,
+    kind: d.kind,
+    ref: d.reservation || null,
+    assignedAt: d.assignedAt, startedAt: d.startedAt,
+    submittedAt: d.submittedAt, completedAt: d.completedAt,
+    reworked: d.inspectionResult === 'Returned for recleaning',
+    inspection: d.inspectionResult
+      ? { result: d.inspectionResult, by: d.supervisorName || '', note: d.inspectionNote || '',
+          reworked: d.inspectionResult === 'Returned for recleaning' }
+      : null
+  };
+}
+
+/* Re-read housekeeping state from the database. Called after every mutation
+   and on login, so the board always reflects MongoDB. */
+async function loadHousekeeping(){
+  const [taskDocs, hkDocs, reqDocs] = await Promise.all([
+    SIROMS.api.tasks(),
+    SIROMS.api.users('?role=housekeeper'),
+    // A housekeeper only ever sees their own requests; supervisors/managers
+    // see the queue they are responsible for. Role rules unchanged.
+    SIROMS.api.guestRequests(currentUser && currentUser.role==='housekeeper' ? '?mine=true' : '')
+  ]);
+  tasks = taskDocs.map(mapTask);
+  housekeepers = hkDocs.map(u => ({ id: u._id, name: u.name }));
+  guestRequests = reqDocs.map(mapRequest);
+}
+
+/* Map a GuestRequest document into the shape both the Guest Requests page and
+   the Housekeeping board render. There is NO second document: a guest request
+   is a housekeeping task, shown in two places. */
+function mapRequest(d){
+  const items=(d.items||[]);
+  return {
+    id: d._id,
+    kind: 'request',
+    room: d.roomNumber,
+    guest: d.guest,
+    items,
+    notes: d.notes || '',
+    by: d.createdByName || '',
+    status: d.status,                                   // Pending | Assigned | In delivery | Delivered
+    assignedTo: d.assignedTo && (d.assignedTo._id || d.assignedTo),
+    staff: d.assignedToName || 'Unassigned',
+    charge: items.reduce((a,i)=>a+(i.price||0)*(i.qty||1),0),
+    createdAt: d.createdAt
+  };
+}
+
+/* The board's four columns follow the cleaning flow. A guest request runs a
+   different progression (Assigned → In delivery → Delivered), so it is placed
+   in the equivalent column while its card shows its own real status. */
+const REQUEST_COLUMN={ 'Pending':'Assigned', 'Assigned':'Assigned',
+                       'In delivery':'In Progress', 'Delivered':'Completed' };
+
+/* Assigned guest requests, presented as board items. */
+function requestBoardItems(){
+  return guestRequests
+    .filter(r=>r.assignedTo)                            // only once someone owns it
+    .filter(r=>currentUser.role!=='housekeeper' || r.staff===currentUser.name)
+    .map(r=>({
+      ...r,
+      type: r.items.length===1 ? r.items[0].name : 'Guest item delivery',
+      typeLabel: 'Guest Delivery',
+      priority: 'Normal',
+      column: REQUEST_COLUMN[r.status] || 'Assigned',
+      detail: r.items.map(i=>`${i.name} ×${i.qty}`).join(', ')
+    }));
+}
+
+/* Run a mutation, re-read from the server, then re-render.
+   On failure the real API message is shown and NOTHING is re-rendered as
+   success — the UI never claims a write that the database refused. */
+async function housekeepingAction(fn, successMsg){
+  try {
+    const result = await fn();
+    await loadHousekeeping();
+    renderAll();
+    if (successMsg) showToast(typeof successMsg === 'function' ? successMsg(result) : successMsg);
+    return result;
+  } catch (err) {
+    showToast(err && err.message ? err.message : 'The change could not be saved.');
+    throw err;
+  }
+}
+
 function renderTasks(){
  const isHk=currentUser.role==='housekeeper';
  setPageSubtitle('housekeeping',isHk?`Your assigned rooms, ${currentUser.name.split(' ')[0]}. Move each one through the workflow as you go.`:'Track every room from assignment through supervisor inspection.');
- const visible=isHk?myTasks():tasks;
+ // Unified workspace: cleaning/inspection tasks PLUS assigned guest requests.
+ const cleaning=(isHk?myTasks():tasks).map(t=>({...t,
+   column:t.status,
+   typeLabel:t.kind==='inspection'?'Inspection':/reclean/i.test(t.type)?'Recleaning':/stay-over/i.test(t.type)?'Stay-over':'Cleaning',
+   detail:''}));
+ const visible=[...cleaning,...requestBoardItems()];
  $('hkStats').innerHTML=statCards(TASK_FLOW.map(s=>{
-   const n=visible.filter(t=>t.status===s).length;
+   const n=visible.filter(t=>t.column===s).length;
    return [s,n,{Assigned:'not started','In Progress':'being cleaned','Ready for Inspection':'awaiting approval',Completed:'approved'}[s],s==='Ready for Inspection'&&n&&currentUser.role==='supervisor'?'warn':''];
  }));
  $('workloadPanel').innerHTML=currentUser.role==='supervisor'||currentUser.role==='manager'
    ? panel('Team Workload','Assign new rooms to whoever has the lightest load',workloadBars())
    :'';
  $('housekeepingBoard').innerHTML=TASK_FLOW.map(col=>{
-   const list=visible.filter(t=>t.status===col);
+   const list=visible.filter(t=>t.column===col);
    return `<div class="kanban-column"><h3>${col}<span>${list.length}</span></h3>${list.map(t=>`
      <div class="task-card">
        <div class="tc-head"><h4>Room ${t.room}</h4><span class="badge ${t.priority==='High'||t.priority==='Urgent'?'high':'low'}">${t.priority}</span></div>
-       <p class="tc-type">${t.type}</p>
+       <p class="tc-type"><span class="type-tag ${t.kind==='request'?'delivery':'clean'}">${t.typeLabel}</span> ${esc(t.type)}</p>
+       ${t.guest?`<p class="tc-guest">${esc(t.guest)}</p>`:''}
+       ${t.detail?`<p class="tc-detail">${esc(t.detail)}</p>`:''}
        ${t.note?`<p>${esc(t.note)}</p>`:''}
-       <p class="tc-staff">${t.staff}</p>
+       ${t.notes?`<p>${esc(t.notes)}</p>`:''}
+       <p class="tc-staff">${t.staff}${t.kind==='request'&&t.status!==t.column?` · ${t.status}`:''}</p>
        ${t.inspection?`<div class="tc-inspection ${t.inspection.result==='Approved'?'ok':'warn'}">${t.inspection.result} by ${t.inspection.by}${t.inspection.note?` — ${esc(t.inspection.note)}`:''}</div>`:''}
        <div class="task-buttons">${taskActions(t)}</div>
      </div>`).join('')||`<div class="empty-task-state">No rooms here.</div>`}</div>`;
@@ -1054,25 +1205,36 @@ function renderTasks(){
  bindTaskActions();
 }
 function bindTaskActions(){
- document.querySelectorAll('[data-task-advance]').forEach(b=>b.onclick=()=>advanceTask(+b.dataset.taskAdvance));
- document.querySelectorAll('[data-inspect]').forEach(b=>b.onclick=()=>openInspect(+b.dataset.inspect));
+ document.querySelectorAll('[data-task-advance]').forEach(b=>b.onclick=()=>advanceTask(b.dataset.taskAdvance));
+ document.querySelectorAll('[data-inspect]').forEach(b=>b.onclick=()=>openInspect(b.dataset.inspect));
  document.querySelectorAll('[data-inspect-room]').forEach(b=>b.onclick=()=>openRoomInspection(b.dataset.inspectRoom));
- document.querySelectorAll('[data-reassign]').forEach(b=>b.onclick=()=>openAssignModal(+b.dataset.reassign));
+ document.querySelectorAll('[data-request-advance]').forEach(b=>b.onclick=()=>advanceRequest(b.dataset.requestAdvance));
+ document.querySelectorAll('[data-reassign]').forEach(b=>b.onclick=()=>openAssignModal(b.dataset.reassign));
  document.querySelectorAll('[data-assess]').forEach(b=>b.onclick=()=>openAssess(+b.dataset.assess));
  document.querySelectorAll('.housekeeper-report').forEach(b=>b.onclick=openIssueModal);
 }
+/* Move a guest request along its own workflow. The SAME document backs the
+   Guest Requests page, so both views change together — no syncing required. */
+function advanceRequest(id){
+  const r=guestRequests.find(x=>String(x.id)===String(id)); if(!r) return;
+  const next=r.status==='In delivery'?'delivered':'out for delivery';
+  housekeepingAction(
+    ()=>SIROMS.api.advanceGuestRequest(r.id),
+    `Room ${r.room} request ${next}.`
+  ).catch(()=>{});
+}
+
+/* Housekeeper moves a room forward. The server owns the transition AND the
+   resulting room status, so nothing is changed locally first. */
 function advanceTask(id){
- const t=tasks.find(x=>x.id===id);if(!t)return;
- if(t.status==='Assigned'){
-   t.status='In Progress';t.startedAt=nowISO();
-   const room=rooms.find(r=>r.n===t.room);if(room&&room.status!=='maintenance')room.status='cleaning';
-   showToast(`Room ${t.room} marked as currently cleaning.`);
- }else if(t.status==='In Progress'){
-   t.status='Ready for Inspection';t.submittedAt=nowISO();
-   notify(['supervisor'],'Room ready for inspection',`Room ${t.room} was submitted by ${currentUser.name}.`);
-   showToast(`Room ${t.room} submitted for inspection.`);
- }
- renderAll();
+  const t=tasks.find(x=>String(x.id)===String(id)); if(!t) return;
+  const next = t.status==='Assigned' ? 'now being cleaned'
+             : t.status==='In Progress' ? 'submitted for inspection' : null;
+  if(!next) return;
+  housekeepingAction(
+    ()=>SIROMS.api.advanceTask(t.id),
+    `Room ${t.room} ${next}.`
+  ).catch(()=>{});
 }
 function openInspect(id){
  const t=tasks.find(x=>x.id===id);if(!t)return;
@@ -1082,35 +1244,52 @@ function openInspect(id){
  $('inspectNote').value='';
  openBackdrop('inspectBackdrop');
 }
+/* Supervisor approves or returns a cleaning. The server sets the task status
+   and flips the room to available on approval. */
 function finishInspection(approved){
- const t=tasks.find(x=>x.id===+$('inspectTaskId').value);if(!t)return;
- const note=$('inspectNote').value.trim();
- if(approved){
-   const unchecked=[...document.querySelectorAll('.inspect-check')].filter(c=>!c.checked).length;
-   if(unchecked)return showToast(`${unchecked} checklist item${unchecked>1?'s are':' is'} unticked. Approve only a fully passed room.`);
-   t.status='Completed';t.completedAt=nowISO();
-   t.inspection={result:'Approved',by:currentUser.name,note,reworked:!!t.reworked};
-   const room=rooms.find(r=>r.n===t.room);
-   if(room&&room.status!=='maintenance'&&!room.stay)room.status='available';
-   notify(['frontdesk'],'Room available',`Room ${t.room} passed inspection and is ready for guests.`);
-   showToast(`Room ${t.room} approved and now available.`);
- }else{
-   t.status='In Progress';t.reworked=true;t.submittedAt=null;
-   t.inspection={result:'Returned for recleaning',by:currentUser.name,note};
-   notify(['housekeeper'],'Room returned',`Room ${t.room} needs recleaning${note?`: ${note}`:'.'}`);
-   showToast(`Room ${t.room} returned to ${t.staff} for recleaning.`);
- }
- closeBackdrop('inspectBackdrop');renderAll();
+  const id=$('inspectTaskId').value;
+  const t=tasks.find(x=>String(x.id)===String(id)); if(!t) return;
+  const note=$('inspectNote').value.trim();
+  if(approved){
+    const unchecked=[...document.querySelectorAll('.inspect-check')].filter(c=>!c.checked).length;
+    if(unchecked) return showToast(`${unchecked} checklist item${unchecked>1?'s are':' is'} unticked. Approve only a fully passed room.`);
+  }
+  closeBackdrop('inspectBackdrop');
+  housekeepingAction(
+    ()=>SIROMS.api.reviewTask(t.id,{approved,note}),
+    approved ? `Room ${t.room} approved and now available.`
+             : `Room ${t.room} returned to ${t.staff} for recleaning.`
+  ).catch(()=>{});
 }
-function openAssignModal(taskId){
- const busy=housekeepers.map(h=>[h,tasks.filter(t=>t.staff===h&&t.status!=='Completed').length]).sort((a,b)=>a[1]-b[1]);
- $('assignWorkloadHint').innerHTML=`Lightest load right now: <strong>${busy[0][0]}</strong> (${busy[0][1]} active task${busy[0][1]===1?'':'s'}).`;
- $('assignStaff').innerHTML=busy.map(([h,c])=>`<option value="${h}">${h} — ${c} active</option>`).join('');
- const dirty=rooms.filter(r=>r.status==='cleaning'||r.status==='available');
- $('assignRoom').innerHTML=dirty.map(r=>`<option value="${r.n}">Room ${r.n} · ${r.type} · ${r.status}</option>`).join('');
- $('assignTaskForm').dataset.taskId=taskId||'';
- if(taskId){const t=tasks.find(x=>x.id===taskId);if(t){$('assignRoom').innerHTML=`<option value="${t.room}">Room ${t.room}</option>`;$('assignType').value=t.type;$('assignPriority').value=t.priority==='Normal'?'Normal':t.priority;}}
- openBackdrop('assignTaskModalBackdrop');
+/* Assign / reassign dialog. Room list and housekeeper roster are read live
+   from MongoDB so the form can only offer rooms and staff that exist. */
+async function openAssignModal(taskId){
+  try {
+    if(!housekeepers.length) await loadHousekeeping();
+    const busy=housekeepers.map(h=>[h,tasks.filter(t=>t.staff===h.name&&t.status!=='Completed').length])
+                           .sort((a,b)=>a[1]-b[1]);
+    if(!busy.length) return showToast('No housekeeper accounts found.');
+    $('assignWorkloadHint').innerHTML=`Lightest load right now: <strong>${busy[0][0].name}</strong> (${busy[0][1]} active task${busy[0][1]===1?'':'s'}).`;
+    // value = the housekeeper's MongoDB _id, which is what the API expects
+    $('assignStaff').innerHTML=busy.map(([h,c])=>`<option value="${h.id}">${esc(h.name)} — ${c} active</option>`).join('');
+
+    const roomDocs=await SIROMS.api.rooms();
+    const assignable=roomDocs.filter(r=>!['out-of-service'].includes(r.status));
+    $('assignRoom').innerHTML=assignable.map(r=>`<option value="${r._id}" data-number="${r.number}">Room ${r.number} · ${r.type} · ${r.status}</option>`).join('');
+
+    $('assignTaskForm').dataset.taskId=taskId||'';
+    if(taskId){
+      const t=tasks.find(x=>String(x.id)===String(taskId));
+      if(t){
+        const match=assignable.find(r=>r.number===t.room);
+        $('assignRoom').innerHTML=`<option value="${match?match._id:''}" data-number="${t.room}">Room ${t.room}</option>`;
+        $('assignType').value=t.type; $('assignPriority').value=t.priority;
+      }
+    }
+    openBackdrop('assignTaskModalBackdrop');
+  } catch(err){
+    showToast(err && err.message ? err.message : 'Could not load rooms and staff.');
+  }
 }
 
 /* ============================================================
@@ -1152,6 +1331,7 @@ function renderInspections(){
    <footer>${canInspect?`<button class="mini-button primary" data-inspect-room="${r.n}">Start Inspection</button>`:`<span class="muted-text">Housekeeping to inspect</span>`}</footer>
  </article>`;}).join(''):emptyState('No rooms are awaiting inspection.','Rooms appear here when the front desk starts a checkout.');
  document.querySelectorAll('[data-inspect-room]').forEach(b=>b.onclick=()=>openRoomInspection(b.dataset.inspectRoom));
+ document.querySelectorAll('[data-request-advance]').forEach(b=>b.onclick=()=>advanceRequest(b.dataset.requestAdvance));
 }
 
 function openRoomInspection(roomNo){
@@ -1425,17 +1605,36 @@ function renderRequests(){
  const occ=rooms.filter(r=>r.stay);
  $('requestRoom').innerHTML=occ.map(r=>`<option value="${r.n}">Room ${r.n}</option>`).join('')||'<option value="">No in-house guests</option>';
  syncRequestGuest();
- $('activeRequests').innerHTML=guestRequests.length?guestRequests.map(r=>`<div class="request-row">
+ const role=currentUser.role;
+ const canAssign=['supervisor','manager'].includes(role);
+ $('activeRequests').innerHTML=guestRequests.length?guestRequests.map(r=>{
+   const charge=r.items.reduce((a,i)=>a+(i.price||0)*(i.qty||1),0);
+   // Supervisor assigns a housekeeper — this is what makes the request appear
+   // on that housekeeper's Housekeeping board.
+   const assignControl=canAssign&&r.status!=='Delivered'
+     ? `<select class="mini-select" data-assign-req="${r.id}">
+          <option value="">${r.assignedTo?'Reassign…':'Assign to…'}</option>
+          ${housekeepers.map(h=>`<option value="${h.id}"${String(h.id)===String(r.assignedTo)?' selected':''}>${esc(h.name)}</option>`).join('')}
+        </select>` : '';
+   const advance=r.assignedTo&&r.status!=='Delivered'&&(role==='housekeeper'&&r.staff===currentUser.name)
+     ? `<button class="mini-button primary" data-request-advance="${r.id}">${r.status==='In delivery'?'Mark delivered':'Start delivery'}</button>` : '';
+   return `<div class="request-row">
    <span class="badge ${r.status==='Pending'?'medium':r.status==='Delivered'?'low':'info'}">${r.status}</span>
-   <div><strong>${r.items.map(i=>`${esc(i.name)} ×${i.qty}`).join(', ')}</strong><p>Room ${r.room} · ${esc(r.guest)} · logged by ${esc(r.by)}</p></div>
-   <div class="rq-side"><span>${r.items.reduce((a,i)=>a+i.price*i.qty,0)?money(r.items.reduce((a,i)=>a+i.price*i.qty,0)):'Free'}</span>
-   ${r.status!=='Delivered'&&['housekeeper','supervisor','frontdesk'].includes(currentUser.role)?`<button class="mini-button" data-req-advance="${r.id}">${r.status==='Pending'?'Start':'Mark delivered'}</button>`:''}</div>
- </div>`).join(''):emptyState('No guest requests logged yet.');
- document.querySelectorAll('[data-req-advance]').forEach(b=>b.onclick=()=>{
-   const r=guestRequests.find(x=>x.id===+b.dataset.reqAdvance);
-   r.status=r.status==='Pending'?'In delivery':'Delivered';
-   renderAll();showToast(`Request for Room ${r.room} marked ${r.status.toLowerCase()}.`);
+   <div><strong>${r.items.map(i=>`${esc(i.name)} ×${i.qty}`).join(', ')}</strong>
+     <p>Room ${r.room} · ${esc(r.guest)} · logged by ${esc(r.by)}</p>
+     <p class="rq-assignee">${r.assignedTo?`Assigned to ${esc(r.staff)}`:'Not yet assigned'}</p></div>
+   <div class="rq-side"><span>${charge?money(charge):'Free'}</span>${assignControl}${advance}</div>
+ </div>`;}).join(''):emptyState('No guest requests logged.');
+
+ document.querySelectorAll('[data-assign-req]').forEach(sel=>sel.onchange=()=>{
+   const hkId=sel.value; if(!hkId)return;
+   const name=housekeepers.find(h=>String(h.id)===String(hkId));
+   housekeepingAction(
+     ()=>SIROMS.api.assignGuestRequest(sel.dataset.assignReq,hkId),
+     `Request assigned to ${name?name.name:'housekeeper'}.`
+   ).catch(()=>{});
  });
+ document.querySelectorAll('[data-request-advance]').forEach(b=>b.onclick=()=>advanceRequest(b.dataset.requestAdvance));
 }
 function syncRequestGuest(){
  const r=rooms.find(x=>x.n===$('requestRoom').value);
@@ -1579,7 +1778,7 @@ function renderReports(){
  for(let i=days-1;i>=0;i--){const d=dayOff(-i);occSeries.push([d.toLocaleDateString('en-PH',{weekday:'short'}),Math.max(20,Math.min(95,occupancyRate()+((i*37)%25)-12))]);}
 
  const completed=tasks.filter(t=>t.status==='Completed');
- const hkPerf=housekeepers.map(h=>{
+ const hkPerf=hkNames().map(h=>{
    const mine=tasks.filter(t=>t.staff===h);
    const done=mine.filter(t=>t.status==='Completed');
    const rework=done.filter(t=>t.inspection?.reworked).length;
@@ -1679,8 +1878,11 @@ function wire(){
  $('backToLanding').onclick=()=>{$('loginScreen').classList.add('hidden');$('landingScreen').classList.remove('hidden');};
  $('employeePin').oninput=()=>$('loginError').classList.add('hidden');
  $('staffLoginForm').onsubmit=e=>{e.preventDefault();doLogin($('employeePin').value);};
+ // Restore an existing session on reload so the board survives a browser refresh.
+ SIROMS.restoreSession().then(u=>{ if(u) doLoginFromSession(u); }).catch(()=>{});
  $('switchUser').onclick=()=>{
-   currentUser=null;isTimedIn=false;document.body.className='logged-out';
+   SIROMS.logout().catch(()=>{});
+   currentUser=null;isTimedIn=false;tasks=[];housekeepers=[];document.body.className='logged-out';
    $('landingScreen').classList.remove('hidden');$('loginScreen').classList.add('hidden');
    $('employeePin').value='';$('notificationPanel').classList.remove('show');
  };
@@ -1721,19 +1923,24 @@ function wire(){
  };
  $('assignTaskForm').onsubmit=e=>{
    e.preventDefault();
-   const room=$('assignRoom').value,staff=$('assignStaff').value;
+   const roomOpt=$('assignRoom').selectedOptions[0];
+   if(!roomOpt) return showToast('Select a room.');
+   const roomId=roomOpt.value, roomNo=roomOpt.dataset.number;
+   const staffId=$('assignStaff').value, staffName=$('assignStaff').selectedOptions[0]?.textContent.split(' — ')[0]||'';
    const existingId=$('assignTaskForm').dataset.taskId;
-   if(existingId){
-     const t=tasks.find(x=>x.id===+existingId);
-     if(t){t.staff=staff;t.priority=$('assignPriority').value;t.type=$('assignType').value;t.note=$('assignNote').value||t.note;}
-     showToast(`Room ${room} reassigned to ${staff}.`);
-   }else{
-     tasks.unshift({id:nextId(),room,staff,priority:$('assignPriority').value,type:$('assignType').value,note:$('assignNote').value,status:'Assigned',assignedAt:nowISO()});
-     notify(['housekeeper'],'New task assigned',`Room ${room} · ${$('assignType').value}`);
-     showToast(`Room ${room} assigned to ${staff}.`);
-   }
-   $('assignNote').value='';$('assignTaskForm').dataset.taskId='';
-   closeBackdrop('assignTaskModalBackdrop');renderAll();
+   const body={ room:roomId, assignedTo:staffId,
+                priority:$('assignPriority').value, type:$('assignType').value,
+                note:$('assignNote').value, kind:'cleaning' };
+   housekeepingAction(
+     ()=> existingId ? SIROMS.api.updateTask(existingId, body)
+                     : SIROMS.api.createTask(body),
+     existingId ? `Room ${roomNo} reassigned to ${staffName}.`
+                : `Room ${roomNo} assigned to ${staffName}.`
+   ).then(()=>{
+     $('assignNote').value=''; $('assignTaskForm').dataset.taskId='';
+     closeBackdrop('assignTaskModalBackdrop');
+   }).catch(()=>{});   // dialog stays open so the entry can be corrected
+
  };
  $('inspectForm').onsubmit=e=>{e.preventDefault();finishInspection(true);};
  $('inspectReject').onclick=()=>finishInspection(false);
@@ -1804,23 +2011,27 @@ function wire(){
  $('requestRoom').onchange=syncRequestGuest;
  $('requestForm').onsubmit=e=>{
    e.preventDefault();
-   const room=$('requestRoom').value;
-   if(!room)return showToast('No in-house guest to log a request for.');
-   const items=requestItems.map(r=>({name:r.name==='Other'?(r.custom.trim()||'Custom request'):r.name,qty:r.qty,price:r.price}));
+   const roomNo=$('requestRoom').value;
+   if(!roomNo)return showToast('No in-house guest to log a request for.');
    if(requestItems.some(r=>r.name==='Other'&&!r.custom.trim()))return showToast('Describe the custom item before sending.');
-   const charge=items.reduce((a,i)=>a+i.price*i.qty,0);
-   guestRequests.unshift({id:nextId(),room,guest:$('requestGuest').value,items,notes:$('requestNotes').value,status:'Pending',createdAt:nowISO(),by:currentUser.name});
-   const r=rooms.find(x=>x.n===room);
-   if(charge&&r&&r.stay){
-     r.stay.folio.push([items.map(i=>i.name).join(', '),charge]);
-     transactions.unshift({when:nowISO(),ref:`REQ-${room}`,guest:r.stay.guest,room,type:'Additional charge',method:'Charge to room',amount:charge,staff:currentUser.name});
-   }
-   notify(['housekeeper'],'New guest request',`Room ${room} · ${items.map(i=>i.name).join(', ')}`);
-   requestItems=[{name:'Extra pillow',qty:1,price:0,custom:''}];
-   $('requestNotes').value='';
-   renderAll();
-   showToast(`Request for Room ${room} sent to housekeeping.`);
+   const items=requestItems.map(r=>({name:r.name==='Other'?(r.custom.trim()||'Custom request'):r.name,qty:r.qty,price:r.price}));
+   // The server resolves the room, attaches the in-house guest, charges the
+   // folio and notifies the supervisor — one write, one source of truth.
+   housekeepingAction(async ()=>{
+     const roomDocs=await SIROMS.api.rooms();
+     const room=roomDocs.find(x=>x.number===roomNo);
+     if(!room)throw new Error(`Room ${roomNo} was not found.`);
+     // NOTE: this endpoint takes `roomId` (the tasks endpoint takes `room`) —
+     // each contract is followed exactly as the API defines it.
+     return SIROMS.api.createGuestRequest({roomId:room._id,items,notes:$('requestNotes').value});
+   },`Request for Room ${roomNo} sent to the housekeeping supervisor.`)
+   .then(()=>{
+     requestItems=[{name:'Extra pillow',qty:1,price:0,custom:''}];
+     $('requestNotes').value='';
+     renderRequestItems();
+   }).catch(()=>{});
  };
+
 
  // Lost & found
  $('addLostItem').onclick=()=>{$('dateFound').value=nowISO();openBackdrop('lostItemModalBackdrop');};

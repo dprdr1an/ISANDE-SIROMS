@@ -13,7 +13,7 @@ async function connectDB() {
   }
   mongoose.set('strictQuery', true);
   try {
-    await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
+    await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000, family: 4 });
     const { host, name } = mongoose.connection;
     console.log(`✔ Connected to MongoDB — ${host}/${name}`);
   } catch (err) {
