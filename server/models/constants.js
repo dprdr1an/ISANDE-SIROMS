@@ -52,8 +52,8 @@ const TX_TYPES = [
 ];
 const PAYMENT_METHODS = ['Cash', 'Card', 'GCash', 'Maya', 'Bank transfer', '—'];
 
-const ROOM_TYPES = { Standard: { capacity: 2, rate: 1800, beds: '2 single beds' },
-                     Family:   { capacity: 4, rate: 2600, beds: '4 single beds' } };
+const ROOM_TYPES = { Standard: { capacity: 2, rate: 2800, beds: '2 single beds' },
+                     Family:   { capacity: 4, rate: 3600, beds: '4 single beds' } };
 const DEPOSIT = 1000;
 
 module.exports = {
