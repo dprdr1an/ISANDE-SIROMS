@@ -73,7 +73,7 @@ Object.values(M).forEach((Model) => {
     const made = arr.map((d) => new Model(d)); for (const doc of made) await doc.save(); return Array.isArray(data) ? made : made[0]; };
   Model.updateMany = async (f = {}, u = {}) => { for (const d of own().filter((x) => matches(x, f))) { d.set(u.$set || u); await d.save(); } return {}; };
   Model.findByIdAndUpdate = async (id, u) => { const d = byId.get(String(id)); if (!d) return null; d.set(u.$set || u); await d.save(); return d; };
-  Model.aggregate = async (p) => { const g = p.find((x) => x.$group); if (!g) return [];
+  Model.aggregate = async (p) => { const st = p.find((x) => x.$group); if (!st) return []; const g = st.$group;
     const k = String(g._id).replace('$', ''); const o = {}; own().forEach((d) => { const v = d.get(k); o[v] = (o[v] || 0) + 1; });
     return Object.entries(o).map(([_id, nn]) => ({ _id, n: nn })); };
 });
@@ -130,20 +130,24 @@ const docs = (n) => store.filter((d) => d.constructor.modelName === n);
   }
 
   /* ---- 1. Front desk creates a request for Room 203 ---- */
-  console.log('1. FRONT DESK CREATES REQUEST (Room 203)');
+  console.log('1. FRONT DESK CREATES REQUEST (occupied room)');
   const fd = await browser();
   await fd.login('6767');
   await fd.go('requests');
   const beforeReq = docs('GuestRequest').length;
-  const room203 = docs('Room').find((r) => r.number === '203');
-  fd.$('requestRoom').value = '203';
+  // Room 203 is reserved for the John Dela Cruz demo and is deliberately empty,
+  // so use any room that actually has an in-house guest.
+  const occupied = docs('Reservation').find((r) => r.status === 'Checked in' && r.room);
+  const room203 = docs('Room').find((r) => String(r._id) === String(occupied.room));
+  const ROOMNO = room203.number;
+  fd.$('requestRoom').value = ROOMNO;
   fd.$('requestRoom').dispatchEvent(new fd.window.Event('change', { bubbles: true }));
   await new Promise((r) => setTimeout(r, 100));
   fd.$('requestForm').dispatchEvent(new fd.window.Event('submit', { cancelable: true, bubbles: true }));
   await new Promise((r) => setTimeout(r, 500));
   ok('request PERSISTED to MongoDB', docs('GuestRequest').length === beforeReq + 1,
     `${beforeReq} → ${docs('GuestRequest').length}`);
-  const req = docs('GuestRequest').find((r) => r.roomNumber === '203' && r.status === 'Pending');
+  const req = docs('GuestRequest').find((r) => r.roomNumber === ROOMNO && r.status === 'Pending');
   ok('created as Pending and unassigned', !!req && !req.assignedTo);
   ok('guest name attached from the in-house stay', !!req && !!req.guest);
 
@@ -170,10 +174,10 @@ const docs = (n) => store.filter((d) => d.constructor.modelName === n);
   const ana1 = await browser();
   await ana1.login('2211');
   await ana1.go('requests');
-  ok('Guest Requests page shows the request', ana1.requests().includes('203'));
+  ok('Guest Requests page shows the request', ana1.requests().includes(ROOMNO));
   await ana1.go('housekeeping');
   ok('HOUSEKEEPING board also shows it (the reported bug)',
-    ana1.column('Assigned').includes('203') && ana1.column('Assigned').includes('Guest Delivery'),
+    ana1.column('Assigned').includes(ROOMNO) && ana1.column('Assigned').includes('Guest Delivery'),
     'Assigned col=' + ana1.column('Assigned').slice(0, 200));
   ok('card shows the guest name', ana1.board().includes(reqAfter.guest));
   ok('card carries a Guest Delivery type tag', ana1.board().includes('Guest Delivery'));
@@ -191,7 +195,7 @@ const docs = (n) => store.filter((d) => d.constructor.modelName === n);
   ok('MongoDB status → In delivery',
     docs('GuestRequest').find((r) => String(r._id) === String(req._id)).status === 'In delivery');
   ok('Housekeeping board moved it to In Progress column',
-    ana1.column('In Progress').includes('203'));
+    ana1.column('In Progress').includes(ROOMNO));
   await ana1.go('requests');
   ok('Guest Requests page reflects In delivery', ana1.requests().includes('In delivery'));
 
@@ -205,13 +209,13 @@ const docs = (n) => store.filter((d) => d.constructor.modelName === n);
   await new Promise((r) => setTimeout(r, 500));
   const final = docs('GuestRequest').find((r) => String(r._id) === String(req._id));
   ok('MongoDB status → Delivered', final.status === 'Delivered');
-  ok('Housekeeping shows it under Completed', ana1.column('Completed').includes('203'));
+  ok('Housekeeping shows it under Completed', ana1.column('Completed').includes(ROOMNO));
   await ana1.go('requests');
   ok('Guest Requests also shows Delivered', ana1.requests().includes('Delivered'));
   ok('still exactly ONE document for this request',
     docs('GuestRequest').filter((r) => String(r._id) === String(req._id)).length === 1);
   ok('no shadow HousekeepingTask was created for it',
-    !docs('HousekeepingTask').some((t) => t.type === 'Guest item delivery' && t.roomNumber === '203'));
+    !docs('HousekeepingTask').some((t) => t.type === 'Guest item delivery' && t.roomNumber === ROOMNO));
 
   /* ---- 10. cleaning workflow untouched ---- */
   console.log('\n6. CLEANING WORKFLOW STILL WORKS');

@@ -139,10 +139,14 @@ function runScript(file) {
   };
   ok('18 rooms / 12 reservations / 4 tickets seeded',
     baseCounts.Room === 18 && baseCounts.Reservation === 12 && baseCounts.MaintenanceTicket === 4);
-  const kenBefore = find1('Reservation', (d) => d.ref === 'SSR-0718');
   const room203 = find1('Room', (d) => d.number === '203');
-  ok('Room 203 starts OCCUPIED by Ken Ong (the blocking conflict)',
-    room203.status === 'occupied' && String(kenBefore.room) === String(room203._id));
+  // The rebuilt seed reserves Room 203 for the demo: it must start clean.
+  ok('Room 203 starts AVAILABLE with no occupant (reserved for the demo)',
+    room203.status === 'available' && !room203.currentReservation);
+  ok('no background record touches Room 203',
+    !find1('MaintenanceTicket', (d) => d.roomNumber === '203') &&
+    !find1('HousekeepingTask', (d) => d.roomNumber === '203') &&
+    !find1('GuestRequest', (d) => d.roomNumber === '203'));
 
   /* ---------- first demo run ---------- */
   mute(); await runScript('server/seed/demo.js'); unmute();
@@ -153,8 +157,10 @@ function runScript(file) {
   const john = find1('Reservation', (d) => d.ref === 'SSR-2026-9001');
   ok('John Dela Cruz reservation SSR-2026-9001 created', !!john);
   ok('status is Confirmed (check-in can be demonstrated)', john && john.status === 'Confirmed');
-  ok('one night, Standard, deposit ₱1000',
+  ok('one night, Standard, deposit ₱1,000 held separately',
     john && john.adults === 1 && john.roomType === 'Standard' && john.deposit === 1000);
+  ok('accommodation ₱1,800 with the deposit NOT folded in',
+    john && john.total === 1800 && john.depositCollected === false);
   ok('no room pre-assigned (assigned live at check-in)', john && !john.room);
   ok('storyline NOT pre-completed (not checked in/out)',
     john && !john.checkedInAt && !john.checkedOutAt && john.inspectionState === 'none');
@@ -163,12 +169,10 @@ function runScript(file) {
   ok('Room 203 is now AVAILABLE so check-in will succeed', r203.status === 'available');
   ok('Room 203 has no current reservation', !r203.currentReservation);
 
-  const kenAfter = find1('Reservation', (d) => d.ref === 'SSR-0718');
-  ok('Ken Ong was NOT deleted — booking preserved', !!kenAfter && kenAfter.status === 'Checked in');
-  ok('Ken Ong relocated off Room 203', String(kenAfter.room) !== String(r203._id));
-  const kenRoom = find1('Room', (d) => String(d._id) === String(kenAfter.room));
-  ok('Ken Ong\'s new room is marked occupied and linked to him',
-    kenRoom && kenRoom.status === 'occupied' && String(kenRoom.currentReservation) === String(kenAfter._id));
+  ok('no relocation was needed — Room 203 was already free',
+    !find1('Reservation', (d) => d.ref !== 'SSR-2026-9001' && String(d.room) === String(r203._id)));
+  ok('other in-house guests untouched',
+    store.filter((d) => d.constructor.modelName === 'Reservation' && d.status === 'Checked in').length >= 5);
 
   ok('nothing pre-created: no inspection for the demo stay',
     !find1('Inspection', (d) => String(d.reservation) === String(john._id)));

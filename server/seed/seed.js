@@ -18,6 +18,7 @@ const { ROOM_TYPES, DEPOSIT } = require('../models/constants');
 
 const DROP = process.argv.includes('--drop');
 const day = (n) => new Date(Date.now() + n * 86400000);
+const money = (n) => '₱' + Number(n).toLocaleString('en-PH');
 const T = () => new Date();
 
 /**
@@ -74,23 +75,43 @@ function buildRooms() {
   return out;
 }
 
-/* ---------------- in-house stays + upcoming bookings ---------------- */
+/* ============================================================
+   PRIMARY DEMO RECORD — John Dela Cruz (created first)
+   Room 203 · Standard · one night · Confirmed · NOT checked in.
+   Accommodation and deposit are kept as separate amounts.
+   ============================================================ */
+const JOHN = {
+  ref: 'SSR-2026-9001',           // 9000-block marks the demo record
+  guest: 'John Dela Cruz',
+  contact: '0917 888 9001',
+  email: 'john.delacruz@example.com',
+  room: '203',
+  nights: 1,
+  adults: 1,
+  kids: 0,
+  source: 'Front Desk'
+};
+
+/* In-house stays. Totals are DERIVED from the room's nightly rate
+   (rate x nights) — never hardcoded — so pricing can only ever come from
+   ROOM_TYPES. `owing` is what the guest still has to settle.
+   NOTE: Room 203 is deliberately absent; it belongs to the demo. */
 const STAYS = [
-  { ref: 'SSR-0714', guest: 'Jose Ramos',    room: '101', src: 'Front Desk',   in: -2, out: 0, a: 2, k: 0, total: 4100, paid: 3600 },
-  { ref: 'SSR-0716', guest: 'Patricia Tan',  room: '104', src: 'Booking.com',  in: -1, out: 1, a: 2, k: 0, total: 3600, paid: 3600 },
-  { ref: 'SSR-0717', guest: 'Lara Go',       room: '201', src: 'Agoda',        in: -3, out: 0, a: 1, k: 0, total: 5400, paid: 5400 },
-  { ref: 'SSR-0718', guest: 'Ken Ong',       room: '203', src: 'Front Desk',   in: -1, out: 2, a: 2, k: 1, total: 5700, paid: 4000 },
-  { ref: 'SSR-0719', guest: 'Sam Lim',       room: '206', src: 'Booking.com',  in: -2, out: 1, a: 3, k: 2, total: 7800, paid: 7800 },
-  { ref: 'SSR-0712', guest: 'Tina Chua',     room: '302', src: 'Expedia',      in: -4, out: 0, a: 2, k: 2, total: 10650, paid: 10400 },
-  { ref: 'SSR-0715', guest: 'Rina Santos',   room: '304', src: 'Front Desk',   in: -2, out: 3, a: 4, k: 0, total: 13000, paid: 13000 },
-  { ref: 'SSR-0713', guest: 'Ella Diaz',     room: '305', src: 'Agoda',        in: -1, out: 1, a: 1, k: 0, total: 3600, paid: 3600 }
+  { ref: 'SSR-0714', guest: 'Jose Ramos',  room: '101', src: 'Front Desk',  in: -2, out: 0, a: 2, k: 0, owing: 500 },
+  { ref: 'SSR-0716', guest: 'Patricia Tan',room: '104', src: 'Booking.com', in: -1, out: 1, a: 2, k: 0, owing: 0 },
+  { ref: 'SSR-0717', guest: 'Lara Go',     room: '201', src: 'Agoda',       in: -3, out: 0, a: 1, k: 0, owing: 0 },
+  { ref: 'SSR-0719', guest: 'Sam Lim',     room: '206', src: 'Booking.com', in: -2, out: 1, a: 3, k: 2, owing: 0 },
+  { ref: 'SSR-0712', guest: 'Tina Chua',   room: '302', src: 'Expedia',     in: -4, out: 0, a: 2, k: 2, owing: 250 },
+  { ref: 'SSR-0715', guest: 'Rina Santos', room: '304', src: 'Front Desk',  in: -2, out: 3, a: 4, k: 0, owing: 0 },
+  { ref: 'SSR-0713', guest: 'Ella Diaz',   room: '305', src: 'Agoda',       in: -1, out: 1, a: 1, k: 0, owing: 0 }
 ];
 
+/* Upcoming bookings. `type` sets the rate; totals are derived. */
 const UPCOMING = [
-  { ref: 'SSR-2026-0720', guest: 'Andrea Lim',    contact: '0917 555 0110', src: 'Booking.com', in: 0, out: 2, a: 2, k: 1, type: 'Family',   total: 7800, paid: 7800, status: 'Confirmed' },
-  { ref: 'SSR-2026-0721', guest: 'Ben Uy',        contact: '0918 555 0111', src: 'Agoda',       in: 0, out: 1, a: 1, k: 0, type: 'Standard', total: 1800, paid: 900,  status: 'Pending payment' },
-  { ref: 'SSR-2026-0722', guest: 'Cathy Sy',      contact: '0919 555 0112', src: 'Expedia',     in: 1, out: 3, a: 2, k: 0, type: 'Standard', total: 3600, paid: 0,    status: 'Needs review' },
-  { ref: 'SSR-2026-0723', guest: 'Dan Villanueva',contact: '0920 555 0113', src: 'Front Desk',  in: 2, out: 4, a: 2, k: 2, type: 'Family',   total: 5200, paid: 5200, status: 'Confirmed' }
+  { ref: 'SSR-2026-0720', guest: 'Andrea Lim',     contact: '0917 555 0110', src: 'Booking.com', in: 0, out: 2, a: 2, k: 1, type: 'Family',   owing: 0,    status: 'Confirmed' },
+  { ref: 'SSR-2026-0721', guest: 'Ben Uy',         contact: '0918 555 0111', src: 'Agoda',       in: 0, out: 1, a: 1, k: 0, type: 'Standard', owing: 900,  status: 'Pending payment' },
+  { ref: 'SSR-2026-0722', guest: 'Cathy Sy',       contact: '0919 555 0112', src: 'Expedia',     in: 1, out: 3, a: 2, k: 0, type: 'Standard', owing: null, status: 'Needs review' },
+  { ref: 'SSR-2026-0723', guest: 'Dan Villanueva', contact: '0920 555 0113', src: 'Front Desk',  in: 2, out: 4, a: 2, k: 2, type: 'Family',   owing: 0,    status: 'Confirmed' }
 ];
 
 const INVENTORY = [
@@ -127,35 +148,77 @@ async function run() {
   }
   console.log(`  ✔ ${Object.keys(rooms).length} rooms`);
 
-  /* in-house stays — reservation + room linked both ways, once */
+  /* ---------- PRIMARY: John Dela Cruz (created before anything else) ----------
+     Confirmed, one night, Room 203, Standard. Accommodation is derived from
+     the room's own rate; the deposit is a separate amount and is NOT collected
+     yet — the front desk takes ₱1,800 + ₱1,000 = ₱2,800 at check-in. */
+  const johnRoom = rooms[JOHN.room];
+  const johnTotal = johnRoom.rate * JOHN.nights;          // accommodation only
+  const john = await saveDoc(Reservation, { ref: JOHN.ref }, {
+    ref: JOHN.ref, guest: JOHN.guest, contact: JOHN.contact, source: JOHN.source,
+    room: null,                                   // assigned live at check-in
+    roomType: johnRoom.type,
+    checkIn: day(0), checkOut: day(JOHN.nights),
+    adults: JOHN.adults, kids: JOHN.kids,
+    total: johnTotal,
+    paid: 0,
+    deposit: DEPOSIT,
+    depositCollected: false,
+    status: 'Confirmed',
+    inspectionState: 'none', checkedInAt: null, checkedOutAt: null, imported: true,
+    folio: [{ label: `Room ${JOHN.room} · ${johnRoom.type} × ${JOHN.nights} night`, amount: johnTotal }]
+  });
+  // Room 203 stays AVAILABLE so the existing check-in workflow accepts it.
+  await saveDoc(Room, { _id: johnRoom._id }, {
+    status: 'available', currentReservation: null,
+    'housekeeping.state': 'clean', 'maintenance.state': 'ok', 'maintenance.openTickets': 0
+  });
+  console.log(`  ✔ PRIMARY demo reservation ${JOHN.ref} — ${JOHN.guest}`);
+  console.log(`      Room ${JOHN.room} ${johnRoom.type} · ${JOHN.nights} night`);
+  console.log(`      accommodation ${money(johnTotal)} + deposit ${money(DEPOSIT)} = ${money(johnTotal + DEPOSIT)} due at check-in`);
+
+  /* ---------- in-house stays (background) ---------- */
   let stayCount = 0;
   for (const s of STAYS) {
     const room = rooms[s.room];
+    const nights = s.out - s.in;
+    const total = room.rate * nights;               // derived, never hardcoded
+    const owing = s.owing || 0;
     const doc = {
       ref: s.ref, guest: s.guest, source: s.src, room: room._id, roomType: room.type,
       checkIn: day(s.in), checkOut: day(s.out), adults: s.a, kids: s.k,
-      total: s.total, paid: s.paid, deposit: DEPOSIT, status: 'Checked in',
-      checkedInAt: day(s.in), inspectionState: 'none',
-      folio: [{ label: `Room ${s.room} accommodation`, amount: s.total }]
+      total, paid: Math.max(0, total - owing),
+      deposit: DEPOSIT, depositCollected: true,     // held since check-in
+      status: 'Checked in', checkedInAt: day(s.in), inspectionState: 'none',
+      folio: [{ label: `Room ${s.room} · ${room.type} × ${nights} night(s)`, amount: total }]
     };
     const res = await saveDoc(Reservation, { ref: s.ref }, doc);
     await saveDoc(Room, { _id: room._id }, { status: 'occupied', currentReservation: res._id });
-    if (s.paid > 0) {
+    if (doc.paid > 0) {
       await saveDoc(Transaction, { code: `TX-SEED-${s.ref}` }, {
         code: `TX-SEED-${s.ref}`, reservation: res._id, bookingRef: s.ref, guest: s.guest,
         room: room._id, roomNumber: s.room, type: 'Check-in payment', method: 'Cash',
-        amount: s.paid, staffName: 'Anne Reyes', when: day(s.in)
+        amount: doc.paid, staffName: 'Anne Reyes', when: day(s.in)
       });
     }
+    // the deposit is its own transaction, never mixed into the room payment
+    await saveDoc(Transaction, { code: `TX-DEP-${s.ref}` }, {
+      code: `TX-DEP-${s.ref}`, reservation: res._id, bookingRef: s.ref, guest: s.guest,
+      room: room._id, roomNumber: s.room, type: 'Deposit', method: 'Cash',
+      amount: DEPOSIT, staffName: 'Anne Reyes', when: day(s.in)
+    });
     stayCount++;
   }
 
   for (const b of UPCOMING) {
+    const nights = b.out - b.in;
+    const total = ROOM_TYPES[b.type].rate * nights;   // derived from the rate table
+    const paid = b.owing === null ? 0 : Math.max(0, total - b.owing);
     await saveDoc(Reservation, { ref: b.ref }, {
       ref: b.ref, guest: b.guest, contact: b.contact, source: b.src, roomType: b.type,
       checkIn: day(b.in), checkOut: day(b.out), adults: b.a, kids: b.k,
-      total: b.total, paid: b.paid, deposit: DEPOSIT, status: b.status,
-      folio: [{ label: 'Accommodation', amount: b.total }]
+      total, paid, deposit: DEPOSIT, depositCollected: false, status: b.status,
+      folio: [{ label: `${b.type} × ${nights} night(s)`, amount: total }]
     });
   }
   console.log(`  ✔ ${stayCount} in-house stays + ${UPCOMING.length} upcoming reservations`);
@@ -185,7 +248,7 @@ async function run() {
   const reqSeed = [
     { room: '104', items: [{ name: 'Extra Mattress', qty: 1, price: 500 }], notes: '', status: 'Pending' },
     { room: '206', items: [{ name: 'Additional towels', qty: 2, price: 0 }, { name: 'Extra pillow', qty: 2, price: 0 }], notes: 'Family of five', status: 'Pending' },
-    { room: '203', items: [{ name: 'Baby crib', qty: 1, price: 300 }], notes: 'Set up before 8 PM', status: 'Delivered' }
+    { room: '305', items: [{ name: 'Baby crib', qty: 1, price: 300 }], notes: 'Set up before 8 PM', status: 'Delivered' }
   ];
   for (const r of reqSeed) {
     const room = rooms[r.room];
@@ -230,17 +293,18 @@ async function run() {
 
     // Pre-assessment: deliberately NO priority and NO technician.
     { code: 'MT-0002', room: '204', category: 'Plumbing',
-      issue: 'Loose bathroom faucet',
+      issue: 'Leaking bathroom faucet',
       stage: 'assessment', status: 'Awaiting assessment',
       by: 'Ana Cruz',
       history: [ [0, 'Ana Cruz', 'Issue reported to supervisor'] ] },
 
-    { code: 'MT-0003', room: '203', category: 'Electrical',
-      issue: 'Bedside lamp not switching on',
+    // Deliberately NOT Room 203 and NOT a lamp — the demo raises that ticket live.
+    { code: 'MT-0003', room: '205', category: 'Electrical',
+      issue: 'Faulty light in the bathroom',
       stage: 'assigned', status: 'Waiting for parts',
       priority: 'Low', impact: 'Room can stay in use',
       tech: 'Rey Molina', by: 'Joy Ramos', assessedBy: 'Liza Mendoza',
-      parts: 'Lamp switch', eta: 2,
+      parts: 'Light fitting', eta: 2,
       notes: 'Replacement switch on order.',
       history: [
         [-2, 'Joy Ramos', 'Issue reported to supervisor'],
@@ -249,18 +313,18 @@ async function run() {
         [-1, 'Rey Molina', 'Waiting for replacement switch to arrive']
       ] },
 
-    { code: 'MT-0004', room: '102', category: 'Furniture / Fixture',
-      issue: 'Wobbly desk chair',
+    { code: 'MT-0004', room: '102', category: 'Appliance',
+      issue: 'Broken television',
       stage: 'resolved', status: 'Resolved',
       priority: 'Medium', impact: 'Room can stay in use',
       tech: 'Carlo Diaz', by: 'Mika Ong', assessedBy: 'Liza Mendoza',
-      parts: 'Chair bolts', resolved: -1,
-      notes: 'Bolts tightened and seat base tested — chair is stable.',
+      parts: 'HDMI board', resolved: -1,
+      notes: 'Replacement HDMI board fitted and channels tested.',
       history: [
         [-3, 'Mika Ong', 'Issue reported to supervisor'],
         [-2, 'Liza Mendoza', 'Assessed as Medium priority'],
         [-2, 'Liza Mendoza', 'Assigned to Carlo Diaz'],
-        [-1, 'Carlo Diaz', 'Resolved — bolts tightened and tested']
+        [-1, 'Carlo Diaz', 'Resolved — HDMI board replaced and tested']
       ] }
   ];
 
@@ -309,7 +373,7 @@ async function run() {
   /* lost & found */
   const lfSeed = [
     { code: 'LF-0001', item: 'Blue umbrella', category: 'Personal item', location: 'Lobby',    condition: 'Good', status: 'Stored', by: 'Anne Reyes' },
-    { code: 'LF-0002', item: 'Silver wristwatch', category: 'Valuables', location: 'Room 205', condition: 'Good', status: 'Claim pending', by: 'Ana Cruz' },
+    { code: 'LF-0002', item: 'Leather wallet', category: 'Valuables', location: 'Room 205', condition: 'Good', status: 'Claim pending', by: 'Ana Cruz' },
     { code: 'LF-0003', item: 'Phone charger', category: 'Electronics',   location: 'Room 103', condition: 'Good', status: 'Released', by: 'Joy Ramos', claimant: 'Marta Yu' }
   ];
   for (const l of lfSeed) {

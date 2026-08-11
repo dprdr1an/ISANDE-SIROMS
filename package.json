@@ -13,7 +13,10 @@
     "seed:demo": "node server/seed/demo.js",
     "test:demo": "node tests/demo-dryrun.js",
     "test:hk": "node tests/housekeeping-e2e.js",
-    "test:requests": "node tests/requests-e2e.js"
+    "test:requests": "node tests/requests-e2e.js",
+    "test:pricing": "node tests/pricing-john.js",
+    "test:frontdesk": "node tests/frontdesk-e2e.js",
+    "test:dates": "node tests/dates-e2e.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

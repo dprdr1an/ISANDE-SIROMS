@@ -14,8 +14,8 @@
  * existing workflows and business rules.
  *
  * Flags:
- *   --unpaid                      leave the balance outstanding so the front
- *                                 desk can demonstrate collecting payment
+ *   --prepaid                     mark the accommodation as already settled
+ *                                 (by default it is collected at check-in)
  *   --resolve-conflicting-ticket  close the pre-existing MT-0003 "Bedside lamp"
  *                                 ticket on Room 203 (normal workflow
  *                                 transition, nothing deleted) so the stage is
@@ -30,7 +30,7 @@ const {
 } = require('../models');
 const { DEPOSIT } = require('../models/constants');
 
-const UNPAID = process.argv.includes('--unpaid');
+const PREPAID = process.argv.includes('--prepaid');   // settle accommodation up front
 const RESOLVE_CONFLICT = process.argv.includes('--resolve-conflicting-ticket');
 
 /* ---------------- stable demo identifiers ---------------- */
@@ -168,9 +168,12 @@ async function run() {
   }
 
   /* ---------- 5. the demo reservation (the ONLY record we pre-create) ---------- */
+  /* Accommodation only — the ₱1,000 deposit is a separate amount collected at
+     check-in, never part of the rate. Default leaves the accommodation unpaid
+     so the front desk collects ₱1,800 + ₱1,000 = ₱2,800 live. */
   const rate = room203.rate;
   const total = rate * DEMO.nights;
-  const paid = UNPAID ? 0 : total;
+  const paid = PREPAID ? total : 0;
 
   const reservation = await saveDoc(Reservation, { ref: DEMO.ref }, {
     ref: DEMO.ref,
@@ -186,6 +189,7 @@ async function run() {
     total,
     paid,
     deposit: DEPOSIT,
+    depositCollected: false,
     status: 'Confirmed',
     inspectionState: 'none',
     checkedInAt: null,
@@ -218,7 +222,8 @@ async function run() {
   log('  Charge       ₱' + total.toLocaleString() + '   paid ₱' + paid.toLocaleString() +
       '   balance ₱' + (total - paid).toLocaleString());
   log('  Deposit      ₱' + DEPOSIT.toLocaleString() + ' (settled at checkout after inspection)');
-  if (UNPAID) log('  → Front desk collects ₱' + total.toLocaleString() + ' during check-in.');
+  log('  Due at check-in  ₱' + ((total - paid) + DEPOSIT).toLocaleString() +
+      '  (accommodation ₱' + (total - paid).toLocaleString() + ' + deposit ₱' + DEPOSIT.toLocaleString() + ')');
 
   log('\n  Sign in as:');
   log(`    Front Desk    ${staff.frontdesk.name}`);

@@ -13,6 +13,7 @@ const {
   MaintenanceTicket, Transaction, Notification, User
 } = require('../models');
 const { ApiError } = require('../middleware/errorHandler');
+const { DEPOSIT } = require('../models/constants');
 
 /* ------------------------------------------------------------------ *
  * Transaction helper
@@ -108,16 +109,32 @@ async function checkIn({ reservationId, roomId, amountPaid = 0, method = 'Cash',
     if (adults != null) reservation.adults = adults;
     if (kids != null) reservation.kids = kids;
 
-    const balance = reservation.total - reservation.paid;
-    if (amountPaid < balance)
-      throw new ApiError(400, `Outstanding balance of ₱${balance - amountPaid} must be settled before check-in.`);
+    /* Two separate amounts are due at check-in:
+         accommodation balance  = total - paid   (total is accommodation only)
+         security deposit       = reservation.deposit, if not already held
+       They are recorded as distinct transactions so the deposit can be
+       refunded at checkout without touching the room payment. */
+    const accommodationDue = Math.max(0, reservation.total - reservation.paid);
+    const depositDue = reservation.depositCollected ? 0 : (reservation.deposit || 0);
+    const required = accommodationDue + depositDue;
+    if (amountPaid < required)
+      throw new ApiError(400,
+        `₱${required - amountPaid} still due at check-in (accommodation ₱${accommodationDue} + deposit ₱${depositDue}).`);
 
-    if (amountPaid > 0) {
-      reservation.paid += amountPaid;
+    if (accommodationDue > 0) {
+      reservation.paid += accommodationDue;
       await recordTransaction({
         reservation: reservation._id, bookingRef: reservation.ref, guest: reservation.guest,
         room: room._id, roomNumber: room.number, type: 'Check-in payment',
-        method, amount: amountPaid, staff: user?._id, staffName: user?.name
+        method, amount: accommodationDue, staff: user?._id, staffName: user?.name
+      }, session);
+    }
+    if (depositDue > 0) {
+      reservation.depositCollected = true;
+      await recordTransaction({
+        reservation: reservation._id, bookingRef: reservation.ref, guest: reservation.guest,
+        room: room._id, roomNumber: room.number, type: 'Deposit',
+        method, amount: depositDue, staff: user?._id, staffName: user?.name
       }, session);
     }
 
@@ -149,22 +166,33 @@ async function walkIn({ guest, contact, roomId, nights = 1, adults = 1, kids = 0
 
     const checkInDate = new Date();
     const checkOutDate = new Date(Date.now() + nights * 86400000);
+    /* Accommodation comes from the room's own rate (the database is the price
+       source of truth); the deposit is added on top, never folded into it. */
     const total = room.rate * nights;
-    if (amountPaid < total)
-      throw new ApiError(400, `Walk-in requires full payment of ₱${total}.`);
+    const deposit = DEPOSIT;
+    const required = total + deposit;
+    if (amountPaid < required)
+      throw new ApiError(400,
+        `Walk-in requires ₱${required} (accommodation ₱${total} + deposit ₱${deposit}).`);
 
     const ref = await nextReservationRef();
     const [reservation] = await Reservation.create([{
       ref, guest, contact, source: 'Walk-in', room: room._id, roomType: room.type,
       checkIn: checkInDate, checkOut: checkOutDate, adults, kids,
-      total, paid: amountPaid, status: 'Checked in', checkedInAt: checkInDate,
+      total, paid: total, deposit, depositCollected: true,
+      status: 'Checked in', checkedInAt: checkInDate,
       folio: [{ label: `Room ${room.number} × ${nights} night(s)`, amount: total }]
     }], opt(session));
 
     await recordTransaction({
       reservation: reservation._id, bookingRef: ref, guest, room: room._id,
       roomNumber: room.number, type: 'Walk-in payment', method,
-      amount: amountPaid, staff: user?._id, staffName: user?.name
+      amount: total, staff: user?._id, staffName: user?.name
+    }, session);
+    await recordTransaction({
+      reservation: reservation._id, bookingRef: ref, guest, room: room._id,
+      roomNumber: room.number, type: 'Deposit', method,
+      amount: deposit, staff: user?._id, staffName: user?.name
     }, session);
 
     room.status = 'occupied';

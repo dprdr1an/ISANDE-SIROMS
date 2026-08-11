@@ -52,8 +52,17 @@ const TX_TYPES = [
 ];
 const PAYMENT_METHODS = ['Cash', 'Card', 'GCash', 'Maya', 'Bank transfer', '—'];
 
-const ROOM_TYPES = { Standard: { capacity: 2, rate: 2800, beds: '2 single beds' },
-                     Family:   { capacity: 4, rate: 3600, beds: '4 single beds' } };
+/* AUTHORITATIVE ROOM PRICING — the single definition for the whole system.
+   `rate` is the ACCOMMODATION price per night and nothing else. The security
+   deposit below is a separate, refundable amount and must never be added into
+   a rate. (A previous change set these to 2800/3600, i.e. rate + deposit
+   baked together, which then got the deposit added a second time downstream.)
+   Room.rate in MongoDB is seeded from here and is what the API/UI read. */
+const ROOM_TYPES = { Standard: { capacity: 2, rate: 1800, beds: '2 single beds' },
+                     Family:   { capacity: 4, rate: 2600, beds: '4 single beds' } };
+
+/* Refundable security deposit, collected at check-in, settled at checkout
+   against any damages. Separate from accommodation. */
 const DEPOSIT = 1000;
 
 module.exports = {

@@ -30,11 +30,52 @@ const dayOff=n=>{const d=new Date(TODAY);d.setDate(d.getDate()+n);return d;};
 const isoDate=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const isoLocal=d=>`${isoDate(d)}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 const nowISO=()=>isoLocal(new Date());
-const fmtDay=s=>new Date(s+'T00:00:00').toLocaleDateString('en-PH',{month:'short',day:'numeric'});
-const fmtDT=s=>new Date(s).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-const fmtTime=s=>new Date(s).toLocaleTimeString('en-PH',{hour:'numeric',minute:'2-digit'});
-const nights=(a,b)=>Math.max(1,Math.round((new Date(b)-new Date(a))/864e5));
-const T=isoDate(TODAY);
+
+/* ============================================================
+   DATES
+   The API serialises Mongoose Date fields as full ISO timestamps
+   ("2026-08-11T00:00:00.000Z"), while the original prototype stored
+   date-only strings ("2026-08-11"). Every formatter below accepts BOTH,
+   so nothing has to be reformatted at the API boundary and the schema
+   keeps using real Date values.
+   ============================================================ */
+const TZ='Asia/Manila';
+
+/* Parse anything the API or the UI can hand us into a Date, or null. */
+function toDate(v){
+  if(v==null||v==='')return null;
+  if(v instanceof Date)return isNaN(v)?null:v;
+  if(typeof v==='number'){const d=new Date(v);return isNaN(d)?null:d;}
+  const str=String(v).trim();
+  // A bare calendar date is a business date, not an instant: pin it to noon
+  // UTC so it lands on the same calendar day in any timezone we display in.
+  const d=/^\d{4}-\d{2}-\d{2}$/.test(str)?new Date(str+'T12:00:00Z'):new Date(str);
+  return isNaN(d)?null:d;
+}
+
+/* The Manila calendar day ("YYYY-MM-DD") for any value. Check-in and
+   check-out are date-only business values, so all "is it today?" logic and
+   night counts compare Manila days rather than raw instants — that is what
+   prevents an off-by-one when the browser or server sits in another zone. */
+function manilaDay(v){
+  const d=toDate(v);
+  if(!d)return '';
+  return new Intl.DateTimeFormat('en-CA',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit'}).format(d);
+}
+
+const fmtDay=s=>{const d=toDate(s);return d?d.toLocaleDateString('en-PH',{timeZone:TZ,month:'short',day:'numeric'}):'—';};
+const fmtDT=s=>{const d=toDate(s);return d?d.toLocaleString('en-PH',{timeZone:TZ,month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'—';};
+const fmtTime=s=>{const d=toDate(s);return d?d.toLocaleTimeString('en-PH',{timeZone:TZ,hour:'numeric',minute:'2-digit'}):'—';};
+
+/* Nights = whole calendar days between the two Manila dates (never below 1). */
+const nights=(a,b)=>{
+  const x=manilaDay(a),y=manilaDay(b);
+  if(!x||!y)return 1;
+  return Math.max(1,Math.round((new Date(y+'T12:00:00Z')-new Date(x+'T12:00:00Z'))/864e5));
+};
+
+/* Today, as a Manila calendar day. */
+const T=manilaDay(new Date());
 
 let currentUser=null,isTimedIn=false,attendanceLocked=false;
 let uid=100;const nextId=()=>++uid;
@@ -57,8 +98,15 @@ const permissions={
 // Only these roles may add / remove / adjust stock.
 const canManageInventory=()=>['supervisor','manager'].includes(currentUser.role);
 
-const ROOM_TYPES={Standard:{beds:'2 single beds',cap:2,rate:2800},Family:{beds:'4 single beds',cap:4,rate:3600}};
-const DEPOSIT=1000;
+/* Room descriptions only — NO rates. Pricing is owned by MongoDB (Room.rate,
+   seeded from server/models/constants.js) and reached through the API, so the
+   frontend can never disagree with the database. */
+const ROOM_TYPES={Standard:{beds:'2 single beds',cap:2},Family:{beds:'4 single beds',cap:4}};
+/* Deposit is read from the reservation/room record returned by the API;
+   this is only the fallback used before any data has loaded. */
+let DEPOSIT=1000;
+/* Nightly accommodation rate for a room, from the database record. */
+const rateOf=room=>room&&typeof room.rate==='number'?room.rate:0;
 /* Housekeeper roster comes from the database (GET /api/users?role=housekeeper).
    Entries are {id,name}; `hkNames()` gives the plain names older code expects. */
 let housekeepers=[];
@@ -69,46 +117,15 @@ const technicians=['Carlo Diaz','Rey Molina'];
 // A stay now carries a security deposit collected at check-in, plus optional
 // checkout-inspection state (inspStatus, incidents, deductions, extra due).
 function stay(guest,ref,inD,outD,adults,kids,folio,paid,deposit){return {guest,ref,checkIn:inD,checkOut:outD,adults,kids,folio,paid,deposit:deposit==null?DEPOSIT:deposit,inspStatus:'none',incidents:[]};}
-const rooms=[
- {n:'101',type:'Standard',status:'occupied',stay:stay('Jose Ramos','SSR-0714',isoDate(dayOff(-2)),T,2,0,[['Room charge · 2 nights',3600],['Extra mattress',500]],3600)},
- {n:'102',type:'Standard',status:'cleaning'},
- {n:'103',type:'Standard',status:'available'},
- {n:'104',type:'Standard',status:'occupied',stay:stay('Patricia Tan','SSR-0716',isoDate(dayOff(-1)),isoDate(dayOff(1)),2,0,[['Room charge · 2 nights',3600]],3600)},
- {n:'105',type:'Family',status:'available'},
- {n:'106',type:'Standard',status:'available'},
- {n:'201',type:'Standard',status:'occupied',stay:stay('Lara Go','SSR-0717',isoDate(dayOff(-3)),T,1,0,[['Room charge · 3 nights',5400]],5400)},
- {n:'202',type:'Family',status:'available'},
- {n:'203',type:'Standard',status:'occupied',stay:stay('Ken Ong','SSR-0718',isoDate(dayOff(-1)),isoDate(dayOff(2)),2,1,[['Room charge · 3 nights',5400],['Baby crib',300]],4000)},
- {n:'204',type:'Standard',status:'cleaning'},
- {n:'205',type:'Family',status:'available'},
- {n:'206',type:'Family',status:'occupied',stay:stay('Sam Lim','SSR-0719',isoDate(dayOff(-2)),isoDate(dayOff(1)),3,2,[['Room charge · 3 nights',7800]],7800)},
- {n:'301',type:'Standard',status:'cleaning'},
- {n:'302',type:'Family',status:'occupied',stay:stay('Tina Chua','SSR-0712',isoDate(dayOff(-4)),T,2,2,[['Room charge · 4 nights',10400],['Laundry service',250]],10400)},
- {n:'303',type:'Standard',status:'available'},
- {n:'304',type:'Family',status:'occupied',stay:stay('Rina Santos','SSR-0715',isoDate(dayOff(-2)),isoDate(dayOff(3)),4,0,[['Room charge · 5 nights',13000]],13000)},
- {n:'305',type:'Standard',status:'occupied',stay:stay('Ella Diaz','SSR-0713',isoDate(dayOff(-1)),isoDate(dayOff(1)),1,0,[['Room charge · 2 nights',3600]],3600)},
- {n:'306',type:'Standard',status:'maintenance'}
-];
-rooms.forEach(r=>{r.beds=ROOM_TYPES[r.type].beds;r.rate=ROOM_TYPES[r.type].rate;r.floor=r.n[0];});
+/* Rooms come from MongoDB (GET /api/rooms). Room.rate is the authoritative
+   accommodation price — the frontend never computes or stores its own. */
+let rooms=[];
 const roomBal=r=>r.stay?r.stay.folio.reduce((a,f)=>a+f[1],0)-r.stay.paid:0;
 
 /* ---------------- Reservations ---------------- */
-const reservations=[
- {ref:'SSR-2026-0720',guest:'Andrea Lim',contact:'0917 555 0193',source:'Booking.com',checkIn:T,checkOut:isoDate(dayOff(2)),roomType:'Family',room:'205',adults:2,kids:1,total:7800,paid:7800,status:'Confirmed'},
- {ref:'SSR-2026-0721',guest:'Joshua Tan',contact:'0917 210 4456',source:'Front Desk',checkIn:T,checkOut:isoDate(dayOff(1)),roomType:'Standard',room:'106',adults:2,kids:0,total:1800,paid:800,status:'Pending payment'},
- {ref:'SSR-2026-0722',guest:'Bea Ramos',contact:'0918 774 9021',source:'Agoda',checkIn:T,checkOut:isoDate(dayOff(2)),roomType:'Family',room:'202',adults:2,kids:2,total:5200,paid:0,status:'Needs review'},
- {ref:'SSR-2026-0723',guest:'Miguel Cruz',contact:'0917 663 2210',source:'Booking.com',checkIn:isoDate(dayOff(1)),checkOut:isoDate(dayOff(3)),roomType:'Standard',room:'303',adults:1,kids:0,total:3600,paid:3600,status:'Confirmed'},
- {ref:'SSR-2026-0724',guest:'Lea Santos',contact:'0918 552 8890',source:'Expedia',checkIn:isoDate(dayOff(2)),checkOut:isoDate(dayOff(3)),roomType:'Family',room:'—',adults:2,kids:2,total:2600,paid:0,status:'Pending payment'},
- // In-house guests (already checked in) — one reservation per occupied room.
- {ref:'SSR-0714',guest:'Jose Ramos',contact:'0917 100 2201',source:'Front Desk',checkIn:isoDate(dayOff(-2)),checkOut:T,roomType:'Standard',room:'101',adults:2,kids:0,total:4100,paid:3600,status:'Checked in'},
- {ref:'SSR-0716',guest:'Patricia Tan',contact:'0917 100 2202',source:'Booking.com',checkIn:isoDate(dayOff(-1)),checkOut:isoDate(dayOff(1)),roomType:'Standard',room:'104',adults:2,kids:0,total:3600,paid:3600,status:'Checked in'},
- {ref:'SSR-0717',guest:'Lara Go',contact:'0917 100 2203',source:'Agoda',checkIn:isoDate(dayOff(-3)),checkOut:T,roomType:'Standard',room:'201',adults:1,kids:0,total:5400,paid:5400,status:'Checked in'},
- {ref:'SSR-0718',guest:'Ken Ong',contact:'0917 100 2204',source:'Front Desk',checkIn:isoDate(dayOff(-1)),checkOut:isoDate(dayOff(2)),roomType:'Standard',room:'203',adults:2,kids:1,total:5700,paid:4000,status:'Checked in'},
- {ref:'SSR-0719',guest:'Sam Lim',contact:'0917 100 2205',source:'Booking.com',checkIn:isoDate(dayOff(-2)),checkOut:isoDate(dayOff(1)),roomType:'Family',room:'206',adults:3,kids:2,total:7800,paid:7800,status:'Checked in'},
- {ref:'SSR-0712',guest:'Tina Chua',contact:'0917 100 2206',source:'Expedia',checkIn:isoDate(dayOff(-4)),checkOut:T,roomType:'Family',room:'302',adults:2,kids:2,total:10650,paid:10400,status:'Checked in'},
- {ref:'SSR-0715',guest:'Rina Santos',contact:'0917 100 2207',source:'Front Desk',checkIn:isoDate(dayOff(-2)),checkOut:isoDate(dayOff(3)),roomType:'Family',room:'304',adults:4,kids:0,total:13000,paid:13000,status:'Checked in'},
- {ref:'SSR-0713',guest:'Ella Diaz',contact:'0917 100 2208',source:'Agoda',checkIn:isoDate(dayOff(-1)),checkOut:isoDate(dayOff(1)),roomType:'Standard',room:'305',adults:1,kids:0,total:3600,paid:3600,status:'Checked in'}
-];
+/* Reservations come from MongoDB (GET /api/reservations). */
+let reservations=[];
+
 const resBal=r=>r.total-r.paid;
 
 /* ---------------- Booking statuses ---------------- */
@@ -252,20 +269,20 @@ function feed(items){return items.length?`<div class="activity-feed">${items.map
    ============================================================ */
 const roomCount=s=>rooms.filter(r=>r.status===s).length;
 const occupancyRate=()=>Math.round(roomCount('occupied')/rooms.length*100);
-const arrivalsToday=()=>reservations.filter(r=>r.checkIn===T&&['Confirmed','Pending payment','Needs review'].includes(r.status));
-const departuresToday=()=>rooms.filter(r=>r.stay&&r.stay.checkOut===T);
+const arrivalsToday=()=>reservations.filter(r=>manilaDay(r.checkIn)===T&&['Confirmed','Pending payment','Needs review'].includes(r.status));
+const departuresToday=()=>rooms.filter(r=>r.stay&&manilaDay(r.stay.checkOut)===T);
 // Pre-arrival bookings that still owe money (in-house balances are settled at checkout).
 const pendingPayments=()=>reservations.filter(r=>resBal(r)>0&&['Confirmed','Pending payment','Needs review'].includes(r.status));
 const openTickets=()=>tickets.filter(t=>t.stage!=='resolved');
 const lowStock=()=>inventory.filter(i=>i.stock<=i.reorder);
 const myTasks=()=>tasks.filter(t=>t.staff===currentUser.name);
-const txToday=()=>transactions.filter(t=>t.when.slice(0,10)===T);
+const txToday=()=>transactions.filter(t=>manilaDay(t.when)===T);
 const revenueToday=()=>txToday().reduce((a,t)=>a+t.amount,0);
 // Checkout-inspection & incident metrics
 const roomsPendingInspection=()=>rooms.filter(r=>r.stay&&r.stay.inspStatus==='pending');
 const pendingDamagePayments=()=>reservations.filter(r=>r.status==='Pending Damage Payment');
 const roomsWithDamages=()=>rooms.filter(r=>r.stay&&(r.stay.incidents||[]).length);
-const depositRefundsToday=()=>transactions.filter(t=>t.type==='Deposit refund'&&t.when.slice(0,10)===T);
+const depositRefundsToday=()=>transactions.filter(t=>t.type==='Deposit refund'&&manilaDay(t.when)===T);
 
 /* ============================================================
    AUTH & NAVIGATION
@@ -508,7 +525,7 @@ function mtDash(head){
  const mine=tickets.filter(t=>t.stage==='assigned');
  const high=mine.filter(t=>t.priority==='High');
  const parts=mine.filter(t=>t.status==='Waiting for parts');
- const doneToday=tickets.filter(t=>t.stage==='resolved'&&t.resolvedAt?.slice(0,10)===T).length;
+ const doneToday=tickets.filter(t=>t.stage==='resolved'&&manilaDay(t.resolvedAt)===T).length;
  return head('Work orders forwarded by the housekeeping supervisor.',
    `<button class="primary-button" data-go="maintenance">Open Work Orders</button>`)
  +statCards([
@@ -559,7 +576,7 @@ function mgDash(head){
  </div>
  <div class="dashboard-grid mt">
    ${panel('Checkout Inspections','Damage control across departures',
-     `<div class="metric-list tight"><div><span>Rooms pending inspection</span><strong>${roomsPendingInspection().length}</strong></div><div><span>Pending damage payments</span><strong>${pendingDamagePayments().length}</strong></div><div><span>Incidents today</span><strong>${incidents.filter(i=>i.date.slice(0,10)===T).length}</strong></div><div><span>Deposit refunds today</span><strong>${money(depositRefundsToday().reduce((a,t)=>a+Math.abs(t.amount),0))}</strong></div></div>`,
+     `<div class="metric-list tight"><div><span>Rooms pending inspection</span><strong>${roomsPendingInspection().length}</strong></div><div><span>Pending damage payments</span><strong>${pendingDamagePayments().length}</strong></div><div><span>Incidents today</span><strong>${incidents.filter(i=>manilaDay(i.date)===T).length}</strong></div><div><span>Deposit refunds today</span><strong>${money(depositRefundsToday().reduce((a,t)=>a+Math.abs(t.amount),0))}</strong></div></div>`,
      `<button class="text-button" data-go="incidents">Incidents</button>`)}
    ${panel('Rooms with Reported Damages','Open incidents by room',
      incidents.filter(i=>i.status==='Pending').length?`<div class="list-rows">${incidents.filter(i=>i.status==='Pending').slice(0,5).map(i=>`<div class="list-row"><div class="lr-main"><strong>Room ${i.room} · ${esc(i.item)}</strong><p>${i.category} · ${esc(i.guest)}</p></div><div class="lr-side"><strong class="warn-text">${money(incidentCost(i))}</strong></div></div>`).join('')}</div>`:emptyState('No open damage incidents.'),
@@ -775,8 +792,11 @@ function manualTab(){
  </form>`;
  const calc=()=>{
    const type=$('mrType').value,n=nights($('mrIn').value,$('mrOut').value);
-   const total=ROOM_TYPES[type].rate*n,paid=+$('mrPaid').value||0;
-   $('mrBill').innerHTML=`<div><span>${type} · ${money(ROOM_TYPES[type].rate)} × ${n} night${n>1?'s':''}</span><strong>${money(total)}</strong></div><div><span>Deposit required</span><strong>${money(DEPOSIT)}</strong></div><div class="bill-total"><span>Balance after payment</span><strong>${money(Math.max(0,total-paid))}</strong></div>`;
+   /* Rate comes from an actual room of that type in the database. */
+   const sample=rooms.find(r=>r.type===type);
+   const rate=rateOf(sample);
+   const total=rate*n,paid=+$('mrPaid').value||0;
+   $('mrBill').innerHTML=`<div><span>${type} · ${money(rate)} × ${n} night${n>1?'s':''}</span><strong>${money(total)}</strong></div><div><span>Security deposit (separate, refundable)</span><strong>${money(DEPOSIT)}</strong></div><div class="bill-total"><span>Balance after payment</span><strong>${money(Math.max(0,total-paid))}</strong></div>`;
    return {total,paid};
  };
  ['mrType','mrIn','mrOut','mrPaid'].forEach(id=>$(id).oninput=$(id).onchange=calc);
@@ -848,31 +868,46 @@ function updateCheckinSummary(){
  const r=currentRes(),box=$('checkinSummary');
  if(!r){box.innerHTML=emptyState('No reservation selected.');$('checkinBalance').textContent=money(0);return;}
  $('checkinAdults').value=r.adults;$('checkinKids').value=r.kids;
- const due=resBal(r),paid=+$('checkinPaid').value||0;
+ /* Two separate amounts. `total` is accommodation only; the deposit is a
+    distinct refundable sum and is never added into the room rate. */
+ const accommodationDue=Math.max(0,r.total-r.paid);
+ const depositDue=r.depositCollected?0:(r.deposit||0);
+ const due=accommodationDue+depositDue;
+ const paid=+$('checkinPaid').value||0;
  $('checkinBalance').textContent=money(Math.max(0,due-paid));
  $('checkinBalance').className=due-paid>0?'warn-text':'ok-text';
+ const n=nights(r.checkIn,r.checkOut);
+ const rate=n?Math.round(r.total/n):r.total;
  box.innerHTML=`<div class="summary-room"><strong>${esc(r.guest)}</strong><span>${r.ref} · ${r.source}</span></div>
  <dl><div><dt>Stay</dt><dd>${fmtDay(r.checkIn)} – ${fmtDay(r.checkOut)}</dd></div>
- <div><dt>Nights</dt><dd>${nights(r.checkIn,r.checkOut)}</dd></div>
+ <div><dt>Nights</dt><dd>${n}</dd></div>
  <div><dt>Room type</dt><dd>${r.roomType}</dd></div>
- <div><dt>Total charge</dt><dd>${money(r.total)}</dd></div>
+ <div><dt>Room rate</dt><dd>${money(rate)} / night</dd></div>
+ <div><dt>Accommodation</dt><dd>${money(r.total)}</dd></div>
  <div><dt>Already paid</dt><dd>${money(r.paid)}</dd></div>
- <div><dt>Balance due</dt><dd><strong>${money(due)}</strong></dd></div></dl>
- <div class="notice ${due>0?'warn':'ok'}">${due>0?`Collect ${money(due)} before completing check-in.`:'Fully settled — ready to check in.'}</div>`;
+ <div><dt>Security deposit</dt><dd>${money(r.deposit||0)}${r.depositCollected?' (held)':''}</dd></div>
+ <div><dt>Amount due now</dt><dd><strong>${money(due)}</strong></dd></div></dl>
+ <div class="notice ${due>0?'warn':'ok'}">${due>0
+   ?`Collect ${money(due)} — ${money(accommodationDue)} accommodation + ${money(depositDue)} refundable deposit.`
+   :'Fully settled — ready to check in.'}</div>`;
 }
 function updateWalkinSummary(){
  const r=rooms.find(x=>x.n===$('walkinRoom').value);
  const n=+$('walkinNights').value||1;
  const box=$('walkinRoomSummary');
  if(!r){box.innerHTML=emptyState('No room of this type is available.');$('walkinBalance').textContent=money(0);return;}
- const total=r.rate*n+DEPOSIT,paid=+$('walkinPaid').value||0;
+ /* Accommodation from the room's database rate; deposit added as a separate
+    line (it is NOT part of the rate). */
+ const accommodation=rateOf(r)*n, deposit=DEPOSIT, total=accommodation+deposit;
+ const paid=+$('walkinPaid').value||0;
  $('walkinBalance').textContent=money(Math.max(0,total-paid));
  $('walkinBalance').className=total-paid>0?'warn-text':'ok-text';
  box.innerHTML=`<div class="summary-room"><strong>Room ${r.n}</strong><span>${r.type} · ${r.beds}</span></div>
  <dl><div><dt>Maximum guests</dt><dd>${ROOM_TYPES[r.type].cap}</dd></div>
  <div><dt>Rate</dt><dd>${money(r.rate)} / night</dd></div>
  <div><dt>Nights</dt><dd>${n}</dd></div>
- <div><dt>Room charge</dt><dd>${money(r.rate*n)}</dd></div>
+ <div><dt>Room rate</dt><dd>${money(rateOf(r))} / night</dd></div>
+ <div><dt>Accommodation</dt><dd>${money(accommodation)}</dd></div>
  <div><dt>Deposit</dt><dd>${money(DEPOSIT)}</dd></div>
  <div><dt>Total due</dt><dd><strong>${money(total)}</strong></dd></div></dl>`;
 }
@@ -946,33 +981,42 @@ function wireTransactionForms(){
  $('checkinForm').onsubmit=e=>{
    e.preventDefault();
    const r=currentRes();if(!r)return showToast('Select a reservation first.');
-   const due=resBal(r),paid=+$('checkinPaid').value||0;
-   if(paid<due)return showToast(`Outstanding balance of ${money(due-paid)} must be settled first.`);
    const roomNo=$('checkinRoom').value;
    const room=rooms.find(x=>x.n===roomNo);
    if(!room)return showToast('Select an available room.');
-   room.status='occupied';
-   room.stay=stay(r.guest,r.ref,r.checkIn,r.checkOut,+$('checkinAdults').value,+$('checkinKids').value,[[`Room charge · ${nights(r.checkIn,r.checkOut)} nights`,r.total]],r.total);
-   r.paid=r.total;r.status='Checked in';r.room=roomNo;
-   if(paid>0)transactions.unshift({when:nowISO(),ref:r.ref,guest:r.guest,room:roomNo,type:'Check-in payment',method:$('checkinMethod').value,amount:paid,staff:currentUser.name});
-   $('checkinPaid').value=0;
-   renderAll();showToast(`${r.guest} checked into Room ${roomNo}.`);
+   // The server validates the money, assigns the room, records the
+   // accommodation payment and the deposit as separate transactions.
+   housekeepingAction(
+     ()=>SIROMS.api.checkIn(r._id,{
+       roomId:room._id,
+       amountPaid:+$('checkinPaid').value||0,
+       method:$('checkinMethod').value,
+       adults:+$('checkinAdults').value,
+       kids:+$('checkinKids').value
+     }),
+     `${r.guest} checked into Room ${roomNo}.`
+   ).then(()=>{ $('checkinPaid').value=0; }).catch(()=>{});
  };
+
  $('walkinForm').onsubmit=e=>{
    e.preventDefault();
    const room=rooms.find(x=>x.n===$('walkinRoom').value);
-   if(!room)return showToast('No room available for that type.');
-   const n=+$('walkinNights').value||1,total=room.rate*n+DEPOSIT,paid=+$('walkinPaid').value||0;
-   if(paid<total)return showToast(`Room charge and deposit (${money(total)}) must be settled first.`);
-   const g=$('walkinGuest').value.trim()||'Walk-in Guest';
-   const ref=`WALK-${String(nextId()).slice(-4)}`;
-   room.status='occupied';
-   room.stay=stay(g,ref,T,isoDate(dayOff(n)),+$('walkinAdults').value,+$('walkinKids').value,[[`Room charge · ${n} night${n>1?'s':''}`,room.rate*n]],room.rate*n);
-   reservations.unshift({ref,guest:g,contact:$('walkinContact').value,source:'Walk-in',checkIn:T,checkOut:isoDate(dayOff(n)),roomType:room.type,room:room.n,adults:+$('walkinAdults').value,kids:+$('walkinKids').value,total:room.rate*n,paid:room.rate*n,status:'Checked in'});
-   transactions.unshift({when:nowISO(),ref,guest:g,room:room.n,type:'Walk-in payment',method:$('walkinMethod').value,amount:paid,staff:currentUser.name});
-   e.target.reset();$('walkinNights').value=1;$('walkinPaid').value=0;
-   renderAll();showToast(`${g} registered into Room ${room.n}.`);
+   if(!room)return showToast('Select an available room.');
+   const guest=$('walkinGuest').value.trim();
+   if(!guest)return showToast('Enter the guest name.');
+   housekeepingAction(
+     ()=>SIROMS.api.walkIn({
+       guest, contact:$('walkinContact').value,
+       roomId:room._id, nights:+$('walkinNights').value||1,
+       adults:+$('walkinAdults').value||1, kids:+$('walkinKids').value||0,
+       amountPaid:+$('walkinPaid').value||0, method:$('walkinMethod').value
+     }),
+     `${guest} checked into Room ${room.n}.`
+   ).then(()=>{
+     $('walkinGuest').value='';$('walkinContact').value='';$('walkinPaid').value=0;
+   }).catch(()=>{});
  };
+
  $('checkoutForm').onsubmit=e=>{
    e.preventDefault();
    const room=rooms.find(x=>x.n===$('checkoutGuest').value);
@@ -1100,14 +1144,51 @@ function mapTask(d){
 
 /* Re-read housekeeping state from the database. Called after every mutation
    and on login, so the board always reflects MongoDB. */
+/* Map a Room document to the shape the pages render. `rate` is carried
+   straight through from the database — no local price table exists. */
+function mapRoom(d){
+  const res=d.currentReservation&&typeof d.currentReservation==='object'?d.currentReservation:null;
+  return {
+    _id:d._id, n:d.number, type:d.type, status:d.status,
+    beds:d.beds||(ROOM_TYPES[d.type]||{}).beds||'', floor:String(d.floor),
+    rate:d.rate,                                   // ← authoritative price
+    stay: res ? {
+      _id:res._id, guest:res.guest, ref:res.ref,
+      checkIn:res.checkIn, checkOut:res.checkOut,
+      adults:res.adults, kids:res.kids,
+      folio:(res.folio||[]).map(f=>[f.label,f.amount]),
+      paid:res.paid, total:res.total,
+      deposit:res.deposit, depositCollected:res.depositCollected,
+      inspStatus:res.inspectionState||'none', incidents:[]
+    } : null
+  };
+}
+function mapReservation(d){
+  return {
+    _id:d._id, ref:d.ref, guest:d.guest, contact:d.contact||'', source:d.source,
+    checkIn:d.checkIn, checkOut:d.checkOut,
+    roomType:d.roomType, room:(d.room&&(d.room.number||d.room))||'—',
+    roomId:d.room&&(d.room._id||d.room),
+    adults:d.adults, kids:d.kids,
+    total:d.total, paid:d.paid,                    // accommodation only
+    deposit:d.deposit, depositCollected:d.depositCollected,
+    status:d.status
+  };
+}
+
 async function loadHousekeeping(){
-  const [taskDocs, hkDocs, reqDocs] = await Promise.all([
+  const [taskDocs, hkDocs, reqDocs, roomDocs, resDocs] = await Promise.all([
     SIROMS.api.tasks(),
     SIROMS.api.users('?role=housekeeper'),
     // A housekeeper only ever sees their own requests; supervisors/managers
     // see the queue they are responsible for. Role rules unchanged.
-    SIROMS.api.guestRequests(currentUser && currentUser.role==='housekeeper' ? '?mine=true' : '')
+    SIROMS.api.guestRequests(currentUser && currentUser.role==='housekeeper' ? '?mine=true' : ''),
+    SIROMS.api.rooms(),
+    SIROMS.api.reservations().catch(()=>[])        // not every role may read these
   ]);
+  rooms = roomDocs.map(mapRoom);
+  reservations = resDocs.map(mapReservation);
+  if(rooms.length&&rooms[0].stay&&rooms[0].stay.deposit) DEPOSIT=rooms[0].stay.deposit;
   tasks = taskDocs.map(mapTask);
   housekeepers = hkDocs.map(u => ({ id: u._id, name: u.name }));
   guestRequests = reqDocs.map(mapRequest);
@@ -1303,7 +1384,7 @@ let inspectFindings=[]; // working set while the modal is open
 function renderInspections(){
  const sf=$('inspStatusFilter').value;
  const active=inspectionRooms();
- const doneToday=incidents.filter(i=>i.date.slice(0,10)===T);
+ const doneToday=incidents.filter(i=>manilaDay(i.date)===T);
  const canInspect=['housekeeper','supervisor'].includes(currentUser.role);
  setPageSubtitle('inspection',canInspect
    ?'Inspect each room before its guest checks out. Record any damages, missing items or incidents.'
@@ -1732,7 +1813,7 @@ function filteredTransactions(){
  const from=$('transactionFrom').value,to=$('transactionTo').value;
  return transactions.filter(t=>{
    let ok=true;
-   if(range==='today')ok=t.when.slice(0,10)===T;
+   if(range==='today')ok=manilaDay(t.when)===T;
    else if(range==='7')ok=new Date(t.when)>=dayOff(-6);
    else if(range==='30')ok=new Date(t.when)>=dayOff(-29);
    else if(range==='custom')ok=(!from||t.when>=from)&&(!to||t.when<=to);

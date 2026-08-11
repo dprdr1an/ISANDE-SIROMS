@@ -143,7 +143,7 @@ const roomByNumber = (n) => store.find((d) => d.constructor.modelName === 'Room'
     const login = async (pin) => {
       $('employeePin').value = pin;
       $('staffLoginForm').dispatchEvent(new window.Event('submit', { cancelable: true, bubbles: true }));
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 700));
     };
     return { window, doc: window.document, $, login,
       board: () => $('housekeepingBoard').textContent,

@@ -28,7 +28,10 @@ const reservationSchema = new mongoose.Schema({
 
   total:   { type: Number, required: true, min: [0, 'Total cannot be negative.'] },
   paid:    { type: Number, default: 0, min: [0, 'Paid amount cannot be negative.'] },
+  /* Refundable security deposit — held separately from `total`, which is
+     accommodation only. Never add the deposit into `total`. */
   deposit: { type: Number, default: DEPOSIT, min: 0 },
+  depositCollected: { type: Boolean, default: false },
   folio:   [folioLineSchema],
 
   status: { type: String, enum: { values: BOOKING_STATUSES, message: '{VALUE} is not a valid booking status.' },
