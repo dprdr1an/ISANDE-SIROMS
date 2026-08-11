@@ -57,7 +57,7 @@ const permissions={
 // Only these roles may add / remove / adjust stock.
 const canManageInventory=()=>['supervisor','manager'].includes(currentUser.role);
 
-const ROOM_TYPES={Standard:{beds:'2 single beds',cap:2,rate:1800},Family:{beds:'4 single beds',cap:4,rate:2600}};
+const ROOM_TYPES={Standard:{beds:'2 single beds',cap:2,rate:2800},Family:{beds:'4 single beds',cap:4,rate:3600}};
 const DEPOSIT=1000;
 /* Housekeeper roster comes from the database (GET /api/users?role=housekeeper).
    Entries are {id,name}; `hkNames()` gives the plain names older code expects. */
