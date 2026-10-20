@@ -25,6 +25,10 @@ const $=id=>document.getElementById(id)||_stub(id);
 const money=n=>`${n<0?'-':''}₱${Math.abs(Math.round(n)).toLocaleString('en-PH')}`;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+
+/* ============================================================
+   DATA & BUSINESS RULES (unchanged from v11)
+   ============================================================ */
 const TODAY=new Date();TODAY.setHours(0,0,0,0);
 const dayOff=n=>{const d=new Date(TODAY);d.setDate(d.getDate()+n);return d;};
 const isoDate=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -235,22 +239,9 @@ const attendance=[
  {name:'Carlo Diaz',role:'Maintenance',in:'7:25 AM',out:'—',status:'On shift'}
 ];
 
-/* ============================================================
-   UI PRIMITIVES
-   ============================================================ */
-function showToast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>t.classList.remove('show'),2800);}
-const openBackdrop=id=>$(id).classList.add('show');
-const closeBackdrop=id=>$(id).classList.remove('show');
-function statCards(list){return `<div class="stats-grid">${list.map(c=>`<article class="stat-card ${c[3]||''}"><span class="stat-label">${c[0]}</span><strong>${c[1]}</strong><small>${c[2]}</small></article>`).join('')}</div>`;}
-function panel(title,sub,body,action=''){return `<article class="panel"><div class="panel-header"><div><h3>${title}</h3>${sub?`<p>${sub}</p>`:''}</div>${action}</div>${body}</article>`;}
-function emptyState(msg,hint=''){return `<div class="empty-state"><p>${msg}</p>${hint?`<small>${hint}</small>`:''}</div>`;}
-function barChart(data){const max=Math.max(1,...data.map(d=>d[1]));return `<div class="bar-chart">${data.map(d=>`<div class="bar"><i style="height:${Math.round(d[1]/max*180)}px" title="${d[1]}"></i><span>${d[0]}<br><b>${d[2]??d[1]}</b></span></div>`).join('')}</div>`;}
-function distBars(data){const total=data.reduce((a,d)=>a+d[1],0)||1;return `<div class="dist-list">${data.map(d=>`<div class="dist-row"><span class="dist-label"><i class="dot ${d[2]||''}"></i>${d[0]}</span><div class="dist-track"><i class="${d[2]||''}" style="width:${d[1]/total*100}%"></i></div><span class="dist-val">${d[1]} · ${Math.round(d[1]/total*100)}%</span></div>`).join('')}</div>`;}
-function progressRow(label,val,total){const pct=total?Math.round(val/total*100):0;return `<div class="progress-item"><div class="progress-title"><span>${label}</span><small>${val}/${total} · ${pct}%</small></div><div class="progress-bar"><i style="width:${pct}%"></i></div></div>`;}
-function feed(items){return items.length?`<div class="activity-feed">${items.map(i=>`<div class="activity-item"><span class="activity-dot ${i.tone||''}"></span><div><strong>${i.title}</strong><p>${i.text}</p></div><small>${i.time}</small></div>`).join('')}</div>`:emptyState('Nothing recorded yet today.');}
 
 /* ============================================================
-   DERIVED DATA
+   DERIVED DATA  (calculations unchanged from v11)
    ============================================================ */
 const roomCount=s=>rooms.filter(r=>r.status===s).length;
 const occupancyRate=()=>Math.round(roomCount('occupied')/rooms.length*100);
@@ -268,61 +259,291 @@ const roomsPendingInspection=()=>rooms.filter(r=>r.stay&&r.stay.inspStatus==='pe
 const pendingDamagePayments=()=>reservations.filter(r=>r.status==='Pending Damage Payment');
 const roomsWithDamages=()=>rooms.filter(r=>r.stay&&(r.stay.incidents||[]).length);
 const depositRefundsToday=()=>transactions.filter(t=>t.type==='Deposit refund'&&t.when.slice(0,10)===T);
+// v12 helpers (read-only views over existing data)
+const roomsInspected=()=>rooms.filter(r=>r.stay&&r.stay.inspStatus==='done');
+const unassignedTasks=()=>tasks.filter(t=>t.staff==='Unassigned'&&t.status!=='Completed'&&t.kind!=='inspection');
+const readyForInspection=()=>tasks.filter(t=>t.status==='Ready for Inspection');
+const openTaskFor=n=>tasks.find(t=>t.room===n&&t.status!=='Completed'&&t.kind!=='inspection');
+const openTicketFor=n=>tickets.find(t=>t.room===n&&t.stage!=='resolved');
+const can=page=>!!currentUser&&permissions[currentUser.role].includes(page);
+const isRole=(...r)=>!!currentUser&&r.includes(currentUser.role);
+const firstName=n=>String(n||'').split(' ')[0];
+const initials=n=>String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(s=>s[0]).join('').toUpperCase();
+const plural=(n,one,many)=>`${n} ${n===1?one:(many||one+'s')}`;
+const guestsText=(a,k)=>`${a} adult${a>1?'s':''}${k?`, ${k} child${k>1?'ren':''}`:''}`;
+const todayLong=()=>TODAY.toLocaleDateString('en-PH',{weekday:'long',month:'long',day:'numeric'});
+
+/* ============================================================
+   UI PRIMITIVES
+   ============================================================ */
+const icon=(name,cls='')=>`<svg class="icon ${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+function chip(text,tone='neutral',o={}){return `<span class="chip tone-${tone}${o.dot?' dot':''}${o.sm?' sm':''}"${o.title?` title="${esc(o.title)}"`:''}>${o.icon?icon(o.icon,'xs'):''}${text}</span>`;}
+
+// Status → tone maps. Every status chip carries its text label, so meaning
+// never depends on colour alone.
+const BOOKING_TONE={Confirmed:'success','Pending payment':'warning','Needs review':'danger','Checked in':'info','Pending Room Inspection':'warning','Inspection Completed':'info','Pending Damage Payment':'danger','Checked Out':'neutral',Cancelled:'neutral'};
+const ROOM_LABEL={available:'Available',occupied:'Occupied',cleaning:'Cleaning',maintenance:'Maintenance'};
+const ROOM_TONE={available:'success',occupied:'info',cleaning:'warning',maintenance:'danger'};
+const TASK_TONE={Assigned:'neutral','In Progress':'warning','Ready for Inspection':'info',Completed:'success'};
+const REQ_TONE={Pending:'warning','In delivery':'info',Delivered:'success'};
+const INC_TONE={Pending:'warning',Paid:'success',Waived:'neutral'};
+const LF_TONE={Stored:'info','Claim pending':'warning',Released:'neutral'};
+const CAT_TONE={'Damaged Item':'danger','Missing Item':'warning','Other Incident':'info'};
+const statusBadge=s=>chip(s,BOOKING_TONE[s]||'neutral',{dot:true});
+const roomChip=s=>chip(ROOM_LABEL[s]||s,ROOM_TONE[s]||'neutral',{dot:true});
+const taskChip=s=>chip(s==='Ready for Inspection'?'Ready for inspection':s==='In Progress'?'In progress':s,TASK_TONE[s]||'neutral',{dot:true});
+const ticketTone=t=>t.stage==='resolved'?'success':t.stage==='assessment'?'warning':t.status==='Waiting for parts'?'warning':'info';
+function prioTag(p){
+ if(!p)return `<span class="prio">Not assessed</span>`;
+ const k=/high|urgent/i.test(p)?'high':/medium/i.test(p)?'medium':'low';
+ return `<span class="prio p-${k}" title="${esc(p)} priority"><i aria-hidden="true"><b></b><b></b><b></b></i>${esc(p)}</span>`;
+}
+
+function card(title,sub,body,action='',o={}){
+ return `<article class="card${o.cls?' '+o.cls:''}"${o.id?` id="${o.id}"`:''}>
+   <div class="card-head"><div style="min-width:0"><div class="card-title">${o.icon?icon(o.icon,'sm'):''}${title}${o.count!=null?` <span class="card-count${o.attn&&o.count?' attn':''}">${o.count}</span>`:''}</div>${sub?`<p class="card-sub">${sub}</p>`:''}</div>${action}</div>
+   ${o.flush?body:`<div class="card-body">${body}</div>`}
+ </article>`;
+}
+const panel=(title,sub,body,action='')=>card(title,sub,body,action);
+function empty(title,text='',o={}){return `<div class="empty${o.compact?' compact':''}"><div class="empty-icon${o.ok?' ok':''}">${icon(o.icon||(o.ok?'check':'inbox'),'sm')}</div><div><p class="empty-title">${title}</p>${text?`<p class="empty-text">${text}</p>`:''}</div></div>`;}
+const emptyState=(msg,hint='')=>empty(msg,hint);
+function kpi(o){
+ const tag=o.attr?'button':'div';
+ return `<${tag} class="kpi${o.attn?' attn':''}"${o.attr?` type="button" ${o.attr}`:''}>
+   <span class="kpi-label">${o.icon?icon(o.icon,'sm'):''}${o.label}</span>
+   <span class="kpi-value">${o.value}</span>
+   <span class="kpi-sub">${o.sub||''}</span>
+   ${o.attn?`<span class="kpi-flag">${chip('Action needed','warning',{sm:true})}</span>`:''}
+   ${o.attr?`<span class="go">${icon('arrow-right','sm')}</span>`:''}
+ </${tag}>`;
+}
+const kpis=list=>`<div class="kpis">${list.map(kpi).join('')}</div>`;
+// Compact page-level summary. Items may carry an attr (e.g. a filter shortcut).
+function statStrip(list){return `<div class="stat-strip">${list.map(s=>{const tag=s.attr?'button':'div';return `<${tag} class="stat${s.attn?' attn':''}${s.active?' active':''}"${s.attr?` type="button" ${s.attr}`:''}><span class="stat-label">${s.label}</span><span class="stat-value">${s.value}</span>${s.sub?`<span class="stat-sub">${s.sub}</span>`:''}</${tag}>`;}).join('')}</div>`;}
+// Legacy signature kept for any caller: [[label,value,sub,'warn'],…]
+const statCards=list=>statStrip(list.map(c=>({label:c[0],value:c[1],sub:c[2],attn:c[3]==='warn'})));
+function segmented(target,options,current,render){
+ return options.map(o=>`<button type="button" class="seg-btn${String(o.value)===String(current)?' active':''}" data-seg="${target}" data-value="${esc(o.value)}" data-render="${render}" aria-pressed="${String(o.value)===String(current)}">${o.dot?`<span class="sdot ${o.dot}"></span>`:''}${o.label}${o.count!=null?` <span class="seg-count">${o.count}</span>`:''}</button>`).join('');
+}
+function listItem(o){
+ const tag=o.attr?'button':'div';
+ return `<${tag} class="list-item"${o.attr?` type="button" ${o.attr}`:''}>
+   ${o.lead!=null?`<span class="li-lead${o.leadTone?' tone-'+o.leadTone:''}">${o.lead}</span>`:''}
+   <span class="li-main"><span class="li-title">${o.title}</span>${o.sub?`<span class="li-sub">${o.sub}</span>`:''}</span>
+   ${o.meta?`<span class="li-meta">${o.meta}</span>`:''}
+   ${o.actions?`<span class="li-actions">${o.actions}</span>`:''}
+ </${tag}>`;
+}
+const listOf=items=>`<div class="list">${items.join('')}</div>`;
+function barChart(data){
+ const max=Math.max(1,...data.map(d=>Math.abs(d[1])));
+ return `<div class="bars" role="img" aria-label="Bar chart">${data.map((d,i)=>`<div class="bar-col${i===data.length-1?' today':''}"><span class="bar-val">${d[2]??d[1]}</span><span class="bar-fill${d[1]<0?' neg':''}" style="height:${Math.max(2,Math.round(Math.abs(d[1])/max*150))}px" title="${esc(d[0])}: ${esc(d[2]??d[1])}"></span></div>`).join('')}</div><div class="bar-labels">${data.map(d=>`<span>${d[0]}</span>`).join('')}</div>`;
+}
+function distBars(data){
+ const total=data.reduce((a,d)=>a+d[1],0)||1;
+ if(!data.length)return empty('Nothing to show yet.','',{compact:true});
+ return `<div class="hbars">${data.map(d=>`<div class="hbar"><span class="hbar-label">${d[2]?`<i class="swatch sw-${d[2]}"></i>`:''}<span class="truncate">${esc(d[0])}</span></span><div class="hbar-track"><i class="${d[2]?'bg-'+d[2]:''}" style="width:${d[1]/total*100}%"></i></div><span class="hbar-val">${d[3]??d[1]}<small>${Math.round(d[1]/total*100)}%</small></span></div>`).join('')}</div>`;
+}
+function roomStatusBar(){
+ const d=[['Available','available'],['Occupied','occupied'],['Cleaning','cleaning'],['Maintenance','maintenance']].map(([l,k])=>[l,roomCount(k),k]);
+ return `<div class="stack-bar" role="img" aria-label="${d.map(x=>`${x[0]} ${x[1]}`).join(', ')}">${d.filter(x=>x[1]).map(x=>`<i class="bg-${x[2]}" style="flex:${x[1]}" title="${x[0]}: ${x[1]}"></i>`).join('')}</div>
+ <div class="legend">${d.map(x=>`<span class="legend-item"><i class="swatch sw-${x[2]}"></i>${x[0]}<b>${x[1]}</b></span>`).join('')}</div>`;
+}
+function progressRow(label,val,total){const pct=total?Math.round(val/total*100):0;return `<div class="meter"><div class="meter-head"><span>${label}</span><span>${val} of ${total} · ${pct}%</span></div><div class="progress"><span style="width:${pct}%"></span></div></div>`;}
+function feed(items){return items.length?`<div class="timeline">${items.map(i=>`<div class="tl-item ${i.tone==='ok'?'done':i.tone==='warn'?'warn':''}"><span class="tl-dot"></span><div class="tl-body"><strong>${i.title}</strong><small>${i.text}${i.time?` · ${i.time}`:''}</small></div></div>`).join('')}</div>`:empty('Nothing recorded yet today.','',{compact:true});}
+function rows(pairs,cls=''){return `<div class="rows ${cls}">${pairs.filter(Boolean).map(p=>`<div class="${p[2]||''}"><span>${p[0]}</span><strong>${p[1]}</strong></div>`).join('')}</div>`;}
+function kv(pairs){return `<dl class="kv">${pairs.filter(Boolean).map(p=>`<div class="${p[3]||''}"><dt>${p[0]}</dt><dd>${p[1]}${p[2]?`<small>${p[2]}</small>`:''}</dd></div>`).join('')}</dl>`;}
+
+/* ---------------- Toasts ---------------- */
+function showToast(msg,tone='success'){
+ const region=$('toastRegion');
+ const t=document.createElement('div');
+ t.className=`toast ${tone}`;
+ t.innerHTML=`${icon(tone==='success'?'check-circle':tone==='info'?'info':'alert-circle','sm')}<span>${esc(msg)}</span>`;
+ region.appendChild(t);
+ while(region.children.length>3)region.firstElementChild.remove();
+ setTimeout(()=>{t.classList.add('leaving');setTimeout(()=>t.remove(),220);},tone==='success'?3200:4600);
+}
+const warn=msg=>showToast(msg,'warn');
+
+/* ---------------- Overlays: modal, drawer, confirm ----------------
+   One stack handles Escape, focus trapping and focus restoration for
+   every dialog, so each modal behaves the same way. */
+const overlayStack=[];
+const FOCUSABLE='a[href],button:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+function openBackdrop(id){
+ const el=$(id);if(el.__missing)return;
+ if(!el.classList.contains('show')){el._returnFocus=document.activeElement;el.classList.add('show');overlayStack.push(id);}
+ document.body.style.overflow='hidden';
+ $('notificationPanel').classList.remove('show');
+ setTimeout(()=>{
+   const body=el.querySelector('.modal-body,.drawer-body')||el;
+   const first=[...body.querySelectorAll('input:not([type=hidden]):not([readonly]):not([disabled]),select:not([disabled]),textarea')].find(x=>x.offsetParent!==null&&!x.closest('[hidden]'));
+   const target=(el.id==='drawerBackdrop'||el.id==='confirmBackdrop'||el.id==='modalBackdrop')?el.querySelector('.modal-close,#confirmCancel'):first||el.querySelector('.modal-close');
+   target&&target.focus({preventScroll:true});
+ },40);
+}
+function closeBackdrop(id){
+ const el=$(id);if(el.__missing||!el.classList.contains('show'))return;
+ el.classList.remove('show');
+ const i=overlayStack.lastIndexOf(id);if(i>-1)overlayStack.splice(i,1);
+ if(!overlayStack.length)document.body.style.overflow='';
+ if(id==='confirmBackdrop'&&confirmDialog._resolve){confirmDialog._resolve(false);confirmDialog._resolve=null;}
+ const rf=el._returnFocus;if(rf&&document.contains(rf)&&rf.offsetParent!==null)rf.focus({preventScroll:true});
+}
+function closeAllOverlays(){[...overlayStack].reverse().forEach(closeBackdrop);}
+function trapFocus(e){
+ const id=overlayStack[overlayStack.length-1];if(!id)return;
+ const box=$(id).querySelector('.modal,.drawer');if(!box)return;
+ const f=[...box.querySelectorAll(FOCUSABLE)].filter(x=>x.offsetParent!==null);
+ if(!f.length)return;
+ const first=f[0],last=f[f.length-1];
+ if(!box.contains(document.activeElement)){e.preventDefault();first.focus();return;}
+ if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+ else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+}
+function openDrawer(o){
+ $('drawerEyebrow').textContent=o.eyebrow||'';
+ $('drawerTitle').textContent=o.title||'';
+ $('drawerMeta').innerHTML=o.meta||'';
+ $('drawerBody').innerHTML=o.body||'';
+ $('drawerFoot').innerHTML=o.foot||'';
+ openBackdrop('drawerBackdrop');
+ bindAll($('drawerBackdrop'));
+ $('drawerBody').scrollTop=0;
+}
+const closeDrawer=()=>closeBackdrop('drawerBackdrop');
+// Promise-based confirm used for consequential actions only.
+function confirmDialog(o){
+ return new Promise(resolve=>{
+   $('confirmTitle').textContent=o.title||'Are you sure?';
+   $('confirmBody').innerHTML=o.body||'';
+   const ok=$('confirmOk');ok.textContent=o.confirmLabel||'Confirm';
+   ok.className=`btn ${o.danger?'btn-danger':'btn-primary'}`;
+   $('confirmCancel').textContent=o.cancelLabel||'Cancel';
+   confirmDialog._resolve=resolve;
+   ok.onclick=()=>{
+     if(o.validate&&!o.validate())return;
+     const r=confirmDialog._resolve;confirmDialog._resolve=null;closeBackdrop('confirmBackdrop');r&&r(true);
+   };
+   $('confirmCancel').onclick=()=>closeBackdrop('confirmBackdrop');
+   openBackdrop('confirmBackdrop');
+   if(o.focus)setTimeout(()=>{const f=$(o.focus);f&&f.focus();},60);
+ });
+}
+
+/* ---------------- Inline form validation ----------------
+   Forms use novalidate so we can show consistent inline messages. */
+function validateRequired(form){
+ let firstBad=null;
+ form.querySelectorAll('[required]').forEach(f=>{
+   const host=f.closest('label,.field')||f.parentElement;
+   host.querySelector(':scope > .field-error')?.remove();
+   const bad=!String(f.value||'').trim();
+   f.setAttribute('aria-invalid',bad?'true':'false');
+   if(bad){
+     const m=document.createElement('span');m.className='field-error';m.textContent='This field is required.';
+     host.appendChild(m);firstBad=firstBad||f;
+     f.addEventListener('input',()=>{f.setAttribute('aria-invalid','false');m.remove();},{once:true});
+   }
+ });
+ if(firstBad){firstBad.focus();warn('Complete the highlighted fields first.');return false;}
+ return true;
+}
+function clearValidation(form){form.querySelectorAll('.field-error').forEach(e=>e.remove());form.querySelectorAll('[aria-invalid]').forEach(e=>e.setAttribute('aria-invalid','false'));}
 
 /* ============================================================
    AUTH & NAVIGATION
    ============================================================ */
 function initLogin(){
- $('demoDirectory').innerHTML=Object.entries(accounts).map(([pin,a])=>`<li><button type="button" class="demo-pin" data-pin="${pin}"><strong>${pin}</strong> ${a.name}<span>${a.label}</span></button></li>`).join('');
+ $('demoDirectory').innerHTML=Object.entries(accounts).map(([pin,a])=>`<li><button type="button" class="demo-pin" data-pin="${pin}"><b>${pin}</b><strong>${a.name}</strong><span>${a.label}</span></button></li>`).join('');
  document.querySelectorAll('.demo-pin').forEach(b=>b.onclick=()=>{$('employeePin').value=b.dataset.pin;doLogin(b.dataset.pin);});
 }
 function doLogin(pin){
  const a=accounts[pin];
- if(!a){$('loginError').classList.remove('hidden');return;}
- $('loginError').classList.add('hidden');
+ if(!a){$('loginError').classList.remove('hidden');$('employeePin').setAttribute('aria-invalid','true');$('employeePin').select();return;}
+ $('loginError').classList.add('hidden');$('employeePin').setAttribute('aria-invalid','false');
  currentUser=a;isTimedIn=true;attendanceLocked=false;
- document.body.className='logged-in';
+ document.body.classList.remove('logged-out');document.body.classList.add('logged-in');
  applyRole();
  showToast(`Welcome, ${a.name.split(' ')[0]}. Time-in recorded.`);
 }
+const QUICK_ACTIONS={
+ frontdesk:{label:'New reservation',icon:'plus'},
+ supervisor:{label:'Assign task',icon:'plus'},
+ housekeeper:{label:'My tasks',icon:'sparkle'},
+ maintenance:{label:'Work orders',icon:'tool'},
+ manager:{label:'Reports',icon:'chart'}
+};
 function applyRole(){
  $('profileName').textContent=currentUser.name;
  $('profileRole').textContent=currentUser.label;
  $('profileAvatar').textContent=currentUser.initials;
  const allowed=permissions[currentUser.role];
- document.querySelectorAll('.nav-item').forEach(b=>b.style.display=allowed.includes(b.dataset.page)?'flex':'none');
+ document.querySelectorAll('.nav-item').forEach(b=>{
+   const pages=(b.dataset.pages||b.dataset.page).split(' ');
+   b.style.display=pages.some(p=>allowed.includes(p))?'':'none';
+ });
+ // Hide group labels whose items are all hidden for this role.
+ document.querySelectorAll('.nav-group').forEach(g=>{g.style.display=[...g.querySelectorAll('.nav-item')].some(b=>b.style.display!=='none')?'':'none';});
  document.querySelectorAll('.supervisor-only').forEach(e=>e.style.display=currentUser.role==='supervisor'?'':'none');
  document.querySelectorAll('.housekeeper-only').forEach(e=>e.style.display=currentUser.role==='housekeeper'?'':'none');
  document.querySelectorAll('.inventory-manage').forEach(e=>e.style.display=canManageInventory()?'':'none');
- const qa={frontdesk:'+ New Reservation',supervisor:'+ Assign Task',housekeeper:'Open My Tasks',maintenance:'Open Work Orders',manager:'View Reports'}[currentUser.role];
- $('quickAction').textContent=qa;
- $('attendanceButton').textContent=isTimedIn?'Time out':'Time in';
+ const qa=QUICK_ACTIONS[currentUser.role];
+ $('quickAction').innerHTML=`${icon(qa.icon)}<span class="quick-action-label">${qa.label}</span>`;
+ $('quickAction').setAttribute('aria-label',qa.label);
+ $('todayLabel').textContent=todayLong();
+ updateShift();
  go('dashboard');renderAll();
 }
-// Each page has ONE title (H1, shown in the topbar) and a supporting subtitle.
-// The subtitle carries the fuller description so no in-page title needs to repeat it.
+function updateShift(){
+ $('attendanceButton').textContent=isTimedIn?'Time out':'Time in';
+ $('shiftPill').classList.toggle('off',!isTimedIn);
+ const rec=currentUser&&attendance.find(a=>a.name===currentUser.name);
+ $('shiftLabel').textContent=isTimedIn?`On shift${rec&&rec.in&&rec.in!=='—'?` · since ${rec.in}`:''}`:'Off shift';
+}
+// Each page has ONE title (H1, in its own page header) and a supporting subtitle.
 const PAGE_META={
- dashboard:['Operations Dashboard','Live shift overview'],
+ dashboard:['Dashboard','Live shift overview'],
  reservations:['Reservations','Bookings from connected sites and reservations taken at the front desk.'],
- rooms:['Rooms','Live status across all floors. Standard rooms sleep 2, family rooms sleep 4.'],
- checkin:['Guest Transactions','Check in a reservation, register a walk-in, or check out a guest.'],
- housekeeping:['Housekeeping','Track every room from assignment through supervisor inspection.'],
- inspection:['Room Inspections','Checkout inspections before a guest can be checked out.'],
- incidents:['Incident Reports','Damages, missing items and incidents from checkout inspections.'],
+ rooms:['Rooms','Live status of every room. Standard rooms sleep 2, family rooms sleep 4.'],
+ checkin:['Front Desk','Check in a reservation, register a walk-in, or check a guest out.'],
+ housekeeping:['Housekeeping','Every room from assignment through supervisor inspection.'],
+ inspection:['Checkout Inspections','Rooms inspected by housekeeping before a guest can be checked out.'],
+ incidents:['Incident Reports','Damages, missing items and incidents raised during checkout inspections.'],
  maintenance:['Maintenance','Work orders assessed by the supervisor and assigned to technicians.'],
- requests:['Guest Requests','Extra items requested by in-house guests.'],
- lostfound:['Lost & Found','Any staff member can log an item; only the front desk can release one.'],
+ requests:['Guest Requests','Extra items requested by in-house guests, delivered by housekeeping.'],
+ lostfound:['Lost & Found','Any staff member can log an item. Only the front desk can verify and release one.'],
  inventory:['Inventory','Housekeeping supplies and stock levels.'],
- transactions:['Payment Transactions','Every recorded guest payment, filterable by date, method and type.'],
+ transactions:['Payments','Every recorded guest payment, refund and charge, filterable by date, method and type.'],
  reports:['Reports','Performance across rooms, revenue, housekeeping, maintenance and supplies.']
 };
+// Pages presented as tabs of one navigation item.
+const SIBLINGS={inspection:['inspection','incidents'],incidents:['inspection','incidents']};
+const SIBLING_LABEL={inspection:['clipboard','Checkout inspections'],incidents:['alert','Incident reports']};
+let currentPage='dashboard';
 function go(page){
  if(!currentUser||!permissions[currentUser.role].includes(page))page='dashboard';
+ closeAllOverlays();
+ currentPage=page;
  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===page));
- document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===page));
- $('pageTitle').textContent=PAGE_META[page][0];
- $('pageSubtitle').textContent=PAGE_META[page][1];
- $('sidebar').classList.remove('open');
+ document.querySelectorAll('.nav-item').forEach(n=>{
+   const on=(n.dataset.pages||n.dataset.page).split(' ').includes(page);
+   n.classList.toggle('active',on);
+   if(on)n.setAttribute('aria-current','page');else n.removeAttribute('aria-current');
+ });
+ const sec=$(page);
+ if(page!=='dashboard'){
+   const t=sec.querySelector('.page-title'),s=sec.querySelector('.page-sub');
+   if(t)t.textContent=PAGE_META[page][0];
+   if(s)s.textContent=PAGE_META[page][1];
+ }
+ document.title=`${PAGE_META[page][0]} · SIROMS`;
+ renderSiblingTabs();
+ closeNav();
+ $('notificationPanel').classList.remove('show');
+ if(page==='dashboard')renderDashboard();
  if(page==='reservations')renderReservations();
  if(page==='rooms')renderRooms();
  if(page==='checkin')refreshTransactionForms();
@@ -337,222 +558,280 @@ function go(page){
  if(page==='reports')renderReports();
  window.scrollTo({top:0,behavior:'smooth'});
 }
-// Update the topbar subtitle for a page when its content sets a role-specific
-// description. Only applies when that page is the one currently shown.
-function setPageSubtitle(page,text){
- const active=document.querySelector('.page.active');
- if(active&&active.id===page)$('pageSubtitle').textContent=text;
+// Update a page's subtitle when its content sets a role-specific description.
+function setPageSubtitle(page,text){const s=document.querySelector(`#${page} .page-sub`);if(s)s.textContent=text;}
+function renderSiblingTabs(){
+ if(!currentUser)return;
+ document.querySelectorAll('.sibling-tabs').forEach(el=>{
+   const here=el.dataset.siblings;
+   const allowed=SIBLINGS[here].filter(can);
+   if(allowed.length<2){el.hidden=true;el.innerHTML='';return;}
+   el.hidden=false;
+   const count={inspection:inspectionRooms().length,incidents:incidents.filter(i=>i.status==='Pending').length};
+   el.innerHTML=allowed.map(p=>`<button class="tab${p===here?' active':''}" role="tab" aria-selected="${p===here}" data-go="${p}" type="button">${icon(SIBLING_LABEL[p][0],'sm')}${SIBLING_LABEL[p][1]}${count[p]?` <span class="tab-count">${count[p]}</span>`:''}</button>`).join('');
+ });
+}
+function openNav(){document.body.classList.add('nav-open');$('menuButton').setAttribute('aria-expanded','true');setTimeout(()=>{const a=$('sidebar').querySelector('.nav-item.active');a&&a.focus();},50);}
+function closeNav(){document.body.classList.remove('nav-open');$('menuButton').setAttribute('aria-expanded','false');}
+// Sidebar badges: counts of items the signed-in role can act on.
+function renderNavBadges(){
+ if(!currentUser)return;
+ const r=currentUser.role;
+ const set=(page,n,attn)=>{const b=document.querySelector(`[data-badge="${page}"]`);if(!b)return;b.textContent=n?String(n):'';b.classList.toggle('attn',!!attn&&!!n);};
+ document.querySelectorAll('[data-badge]').forEach(b=>b.textContent='');
+ if(r==='frontdesk'){
+   set('checkin',arrivalsToday().length+departuresToday().length);
+   set('reservations',onlineBookings.length);
+   set('lostfound',lostItems.filter(x=>x.status==='Claim pending').length,true);
+ }
+ if(r==='housekeeper'){
+   set('housekeeping',myTasks().filter(t=>t.status==='Assigned'||t.status==='In Progress').length);
+   set('inspection',inspectionRooms().length,true);
+   set('requests',guestRequests.filter(x=>x.status!=='Delivered').length);
+ }
+ if(r==='supervisor'){
+   set('housekeeping',readyForInspection().length+unassignedTasks().length,true);
+   set('inspection',inspectionRooms().length,true);
+   set('maintenance',tickets.filter(t=>t.stage==='assessment').length,true);
+   set('inventory',lowStock().length+restockRequests.filter(x=>x.status==='Open').length,true);
+ }
+ if(r==='maintenance')set('maintenance',tickets.filter(t=>t.stage==='assigned').length);
+ if(r==='manager')set('inventory',lowStock().length,true);
 }
 
 /* ============================================================
-   DASHBOARDS
+   DASHBOARDS — one command centre per role.
+   Every figure comes from the live data structures above; every
+   actionable row opens the exact record it refers to.
    ============================================================ */
+function dashHead(summary,actions=''){
+ const h=new Date().getHours();
+ const greet=h<12?'Good morning':h<18?'Good afternoon':'Good evening';
+ return `<header class="dash-head"><div><p class="eyebrow">${esc(currentUser.label)} · ${todayLong()}</p><h1 class="dash-title page-title">${greet}, ${esc(firstName(currentUser.name))}</h1><p class="page-sub">${summary}</p></div><div class="page-head-actions">${actions}</div></header>`;
+}
 function renderDashboard(){
- const el=$('roleDashboard');
- const hi=`Good day, ${currentUser.name.split(' ')[0]}`;
- const head=(msg,actions)=>`<div class="role-dashboard-header"><div><p class="eyebrow">${currentUser.label.toUpperCase()}</p><h3>${hi}</h3><p>${msg}</p></div><div class="header-actions">${actions}</div></div>`;
- el.innerHTML={frontdesk:fdDash,housekeeper:hkDash,supervisor:svDash,maintenance:mtDash,manager:mgDash}[currentUser.role](head);
- bindDashActions();
+ if(!currentUser)return;
+ $('roleDashboard').innerHTML={frontdesk:fdDash,housekeeper:hkDash,supervisor:svDash,maintenance:mtDash,manager:mgDash}[currentUser.role]();
+ bindAll($('roleDashboard'));
 }
-function bindDashActions(){
- document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
- document.querySelectorAll('[data-dash-assign]').forEach(b=>b.onclick=openAssignModal);
- document.querySelectorAll('[data-dash-newres]').forEach(b=>b.onclick=openReservationModal);
- bindContextActions();
- bindTaskActions();bindTicketActions();
-}
-// Bind every context-preserving action attribute. Safe to call after any render.
-function bindContextActions(scope=document){
- scope.querySelectorAll('[data-checkin-res]').forEach(b=>b.onclick=()=>openCheckinFor(b.dataset.checkinRes));
- scope.querySelectorAll('[data-checkout-room]').forEach(b=>b.onclick=()=>openCheckoutFor(b.dataset.checkoutRoom));
- scope.querySelectorAll('[data-open-res]').forEach(b=>b.onclick=()=>openReservationContext(b.dataset.openRes));
- scope.querySelectorAll('[data-open-inspection]').forEach(b=>b.onclick=()=>openInspectionFor(b.dataset.openInspection));
- scope.querySelectorAll('[data-open-ticket]').forEach(b=>b.onclick=()=>openTicketContext(+b.dataset.openTicket));
-}
+const viewAll=(page,label='View all')=>can(page)?`<button class="link-btn" data-go="${page}" type="button">${label}${icon('chevron-right','xs')}</button>`:'';
 
 /* ---- Front desk ---- */
-function fdDash(head){
+function fdDash(){
  const arr=arrivalsToday(),dep=departuresToday(),pend=pendingPayments();
+ const dmg=pendingDamagePayments(),insp=roomsPendingInspection();
+ const ready=arr.filter(r=>resBal(r)<=0).length;
+ const avail=rooms.filter(r=>r.status==='available');
+ const refunds=depositRefundsToday();
  const openReq=guestRequests.filter(r=>r.status!=='Delivered');
- return head('Arrivals, departures, payments and guest requests for today.',
-   `<button class="secondary-button" data-go="checkin">Guest Transactions</button><button class="primary-button" data-dash-newres="1">+ New Reservation</button>`)
- +statCards([
-   ["Today's arrivals",arr.length,`${arr.filter(r=>r.status==='Confirmed').length} ready to check in`],
-   ['Rooms pending inspection',roomsPendingInspection().length,'before checkout',roomsPendingInspection().length?'warn':''],
-   ['Pending damage payments',pendingDamagePayments().length,'checkouts on hold',pendingDamagePayments().length?'warn':''],
-   ['Deposit refunds today',money(depositRefundsToday().reduce((a,t)=>a+Math.abs(t.amount),0)),`${depositRefundsToday().length} returned`]
- ])
- +`<div class="dashboard-grid">
-   ${panel("Today's Arrivals",'Expected check-ins for this shift',
-     arr.length?`<div class="list-rows">${arr.map(r=>`<div class="list-row"><div class="lr-main"><strong>${esc(r.guest)}</strong><p>${r.ref} · ${r.roomType} · ${r.adults} adult${r.adults>1?'s':''}${r.kids?`, ${r.kids} child${r.kids>1?'ren':''}`:''}</p></div><div class="lr-side">${statusBadge(r.status)}${resBal(r)>0?`<small class="warn-text">${money(resBal(r))} due</small>`:'<small class="ok-text">Fully paid</small>'}</div><button class="mini-button primary" data-checkin-res="${r.ref}">Check in</button></div>`).join('')}</div>`:emptyState('No arrivals scheduled for today.'),
-     `<button class="text-button" data-go="reservations">All reservations</button>`)}
-   ${panel('Departures','Guests checking out today',
-     dep.length?`<div class="list-rows">${dep.map(r=>{
-       const st=r.stay.inspStatus;
-       const side=st==='pending'?'<small class="warn-text">Inspecting</small>':st==='done'?'<small class="ok-text">Inspected</small>':(roomBal(r)>0?`<small class="warn-text">${money(roomBal(r))} balance</small>`:'<small class="ok-text">Settled</small>');
-       const label=st==='pending'?'View':st==='done'?'Finish checkout':'Check out';
-       return `<div class="list-row"><div class="lr-main"><strong>Room ${r.n}</strong><p>${esc(r.stay.guest)} · ${nights(r.stay.checkIn,r.stay.checkOut)} night stay</p></div><div class="lr-side">${side}</div><button class="mini-button primary" data-checkout-room="${r.n}">${label}</button></div>`;
-     }).join('')}</div>`:emptyState('No departures today.'))}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Payments Needing Attention','Bookings that cannot be checked in yet',
-     pend.length?`<div class="list-rows">${pend.map(r=>`<div class="list-row"><div class="lr-main"><strong>${esc(r.guest)}</strong><p>${r.ref} · ${r.source}</p></div><div class="lr-side"><strong class="warn-text">${money(resBal(r))}</strong><small>of ${money(r.total)}</small></div><button class="mini-button primary" data-open-res="${r.ref}">Settle</button></div>`).join('')}</div>`:emptyState('All bookings are fully settled.'))}
-   ${panel('Guest Requests','Items awaiting delivery',
-     openReq.length?`<div class="list-rows">${openReq.map(r=>`<div class="list-row"><div class="lr-main"><strong>Room ${r.room}</strong><p>${r.items.map(i=>`${esc(i.name)} ×${i.qty}`).join(', ')}</p></div><span class="badge ${r.status==='Pending'?'medium':'low'}">${r.status}</span></div>`).join('')}</div>`:emptyState('No open guest requests.'),
-     `<button class="text-button" data-go="requests">Open</button>`)}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Rooms Pending Inspection','Guests waiting on a checkout inspection',
-     roomsPendingInspection().length?`<div class="list-rows">${roomsPendingInspection().map(r=>`<div class="list-row"><div class="lr-main"><strong>Room ${r.n}</strong><p>${esc(r.stay.guest)} · ${r.stay.ref}</p></div><span class="badge medium">Inspecting</span><button class="mini-button" data-open-inspection="${r.n}">Open</button></div>`).join('')}</div>`:emptyState('No rooms are awaiting inspection.'),
-     `<button class="text-button" data-go="inspection">Inspections</button>`)}
-   ${panel('Pending Damage Payments','Checkouts blocked on damage charges',
-     pendingDamagePayments().length?`<div class="list-rows">${pendingDamagePayments().map(r=>{const rm=rooms.find(x=>x.n===r.room);const extra=rm&&rm.stay?depositMath(rm.stay).extra:0;return `<div class="list-row"><div class="lr-main"><strong>${esc(r.guest)}</strong><p>Room ${r.room} · ${r.ref}</p></div><div class="lr-side"><strong class="warn-text">${money(extra)}</strong><small>additional due</small></div><button class="mini-button primary" data-checkout-room="${r.room}">Settle</button></div>`;}).join('')}</div>`:emptyState('No damage payments pending.'),
-     `<button class="text-button" data-go="incidents">Incidents</button>`)}
- </div>
- <div class="mt">${panel('Room Occupancy','Live status across all floors',
-   distBars([['Available',roomCount('available'),'available'],['Occupied',roomCount('occupied'),'occupied'],['Cleaning',roomCount('cleaning'),'cleaning'],['Maintenance',roomCount('maintenance'),'maintenance']]),
-   `<button class="text-button" data-go="rooms">Floor map</button>`)}</div>`;
+ const attention=pend.length+dmg.length;
+ const summary=`${plural(arr.length,'arrival')} and ${plural(dep.length,'departure')} today${attention?` · <span class="warn-text">${plural(attention,'booking')} need payment</span>`:''}.`;
+ const head=dashHead(summary,`<button class="btn btn-secondary" data-desk-tab="walkinRegistration" type="button">${icon('user-plus','sm')}Walk-in</button><button class="btn btn-secondary" data-desk-tab="guestCheckout" type="button">${icon('door-out','sm')}Check-out desk</button>`);
+ const k=kpis([
+   {label:"Today's arrivals",value:arr.length,sub:`${ready} ready · ${arr.length-ready} owe a balance`,icon:'door-in',attr:'data-desk-tab="reservationCheckin"'},
+   {label:'Departures today',value:dep.length,sub:`${dep.filter(r=>r.stay.inspStatus==='pending').length} being inspected · ${dep.filter(r=>r.stay.inspStatus==='done').length} ready to finish`,icon:'door-out',attr:'data-desk-tab="guestCheckout"'},
+   {label:'Rooms available',value:avail.length,sub:`${avail.filter(r=>r.type==='Standard').length} Standard · ${avail.filter(r=>r.type==='Family').length} Family`,icon:'bed',attr:'data-go="rooms"'},
+   {label:'Payments to settle',value:attention,sub:`${pend.length} before arrival · ${dmg.length} damage`,icon:'wallet',attn:attention>0}
+ ]);
+ const arrivals=card("Today's arrivals",'Expected check-ins for this shift',
+   arr.length?listOf(arr.map(r=>listItem({lead:r.room&&r.room!=='—'?r.room:'—',title:esc(r.guest),sub:`${r.ref} · ${r.roomType} · ${guestsText(r.adults,r.kids)}`,
+     meta:`${statusBadge(r.status)}<small>${resBal(r)>0?`<span class="warn-text">${money(resBal(r))} due</span>`:'<span class="ok-text">Fully paid</span>'}</small>`,
+     actions:`<button class="btn btn-primary btn-sm" data-checkin-res="${r.ref}" type="button">Check in</button>`}))):empty('No arrivals scheduled for today.','',{compact:true,ok:true}),
+   viewAll('reservations','All reservations'),{flush:arr.length>0,icon:'door-in',count:arr.length});
+ const departures=card('Departures','Guests due to check out today',
+   dep.length?listOf(dep.map(r=>{
+     const st=r.stay.inspStatus;
+     const meta=st==='pending'?chip('Inspecting','warning',{dot:true}):st==='done'?chip('Inspected','info',{dot:true}):(roomBal(r)>0?chip(`${money(roomBal(r))} balance`,'warning'):chip('Settled','success',{dot:true}));
+     const label=st==='pending'?'View':st==='done'?'Finish checkout':'Check out';
+     return listItem({lead:r.n,title:esc(r.stay.guest),sub:`${plural(nights(r.stay.checkIn,r.stay.checkOut),'night')} · ${r.type}`,meta,actions:`<button class="btn ${st==='pending'?'btn-secondary':'btn-primary'} btn-sm" data-checkout-room="${r.n}" type="button">${label}</button>`});
+   })):empty('No departures today.','',{compact:true,ok:true}),'',{flush:dep.length>0,icon:'door-out',count:dep.length});
+
+ const actionItems=[
+   ...dmg.map(r=>{const rm=rooms.find(x=>x.n===r.room);const extra=rm&&rm.stay?depositMath(rm.stay).extra:0;return listItem({lead:r.room,leadTone:'danger',title:`${esc(r.guest)} · damage payment`,sub:`${money(extra)} above the deposit · checkout on hold`,actions:`<button class="btn btn-primary btn-sm" data-checkout-room="${r.room}" type="button">Settle</button>`});}),
+   ...pend.map(r=>listItem({lead:r.room&&r.room!=='—'?r.room:'—',leadTone:'warning',title:`${esc(r.guest)} · ${money(resBal(r))} due`,sub:`${r.ref} · arrives ${fmtDay(r.checkIn)}`,actions:`<button class="btn btn-secondary btn-sm" data-open-res="${r.ref}" type="button">Settle</button>`})),
+   ...insp.map(r=>listItem({lead:r.n,leadTone:'info',title:`${esc(r.stay.guest)} · inspection in progress`,sub:`${r.stay.ref} · housekeeping is checking the room`,actions:`<button class="btn btn-secondary btn-sm" data-open-inspection="${r.n}" type="button">View</button>`}))
+ ];
+ const attentionCard=card('Needs attention','Payments and checkouts waiting on the desk',
+   actionItems.length?listOf(actionItems):empty('Nothing is waiting on the desk.','All balances are settled and no inspections are pending.',{compact:true,ok:true}),'',{flush:actionItems.length>0,icon:'alert-circle',count:actionItems.length,attn:true});
+ const pipeline=card('Checkout inspections','Today’s inspection and deposit activity',
+   rows([['Rooms pending inspection',insp.length],['Pending damage payments',dmg.length],['Deposit refunds today',`${money(refunds.reduce((a,t)=>a+Math.abs(t.amount),0))} · ${refunds.length} returned`]]),
+   viewAll('inspection','Inspections'),{icon:'shield'});
+ const occupancy=card('Room availability','Live status across all floors',roomStatusBar(),viewAll('rooms','Room board'),{icon:'grid'});
+ const requests=card('Guest requests','Items awaiting delivery',
+   openReq.length?listOf(openReq.map(r=>listItem({lead:r.room,title:r.items.map(i=>`${esc(i.name)} ×${i.qty}`).join(', '),sub:`${esc(r.guest)} · ${fmtTime(r.createdAt)}`,meta:chip(r.status,REQ_TONE[r.status],{dot:true})}))):empty('No open guest requests.','',{compact:true,ok:true}),
+   viewAll('requests','Open'),{flush:openReq.length>0,icon:'bell-desk',count:openReq.length});
+ return head+k+`<div class="grid-main"><div class="stack">${arrivals}${departures}</div><div class="stack">${attentionCard}${pipeline}${occupancy}${requests}</div></div>`;
 }
 
 /* ---- Housekeeper ---- */
-function hkDash(head){
+function hkDash(){
  const mine=myTasks();
  const by=s=>mine.filter(t=>t.status===s);
- const done=by('Completed').length;
- return head('Your assigned rooms for this shift. Update each task as you work.',
-   `<button class="secondary-button housekeeper-report">Report Room Issue</button><button class="primary-button" data-go="housekeeping">Open Task Board</button>`)
- +statCards([
-   ['Assigned to me',by('Assigned').length,'not started yet'],
-   ['Currently cleaning',by('In Progress').length,'in progress'],
-   ['Waiting for inspection',by('Ready for Inspection').length,'submitted to supervisor'],
-   ['Completed today',done,'approved by supervisor']
- ])
- +`<div class="dashboard-grid">
-   ${panel('My Tasks','Update the status as you move through each room',
-     mine.length?`<div class="task-rows">${mine.filter(t=>t.status!=='Completed').map(taskRow).join('')||emptyState('All your rooms are done. Nice work.')}</div>`:emptyState('No rooms assigned to you yet.'),
-     `<button class="text-button" data-go="housekeeping">Full board</button>`)}
-   ${panel('Shift Progress','How far along your rooms are',
-     progressRow('Completed',done,mine.length)+progressRow('Started',mine.filter(t=>t.status!=='Assigned').length,mine.length)
-     +`<div class="mini-note">Rooms only become available once your supervisor approves the inspection.</div>`)}
- </div>
- ${roomsPendingInspection().length?`<div class="mt">${panel('Checkout Inspections','Rooms to inspect before the guest can check out',`<div class="list-rows">${roomsPendingInspection().map(r=>`<div class="list-row"><div class="lr-main"><strong>Room ${r.n}</strong><p>${esc(r.stay.guest)} · departing</p></div><button class="mini-button primary" data-inspect-room="${r.n}">Inspect</button></div>`).join('')}</div>`,`<button class="text-button" data-go="inspection">Open inspections</button>`)}</div>`:''}
- <div class="mt">${panel('Recent Activity','Your latest task updates',feed(mine.filter(t=>t.startedAt).slice(-5).reverse().map(t=>({title:`Room ${t.room} · ${t.status}`,text:t.type,time:fmtTime(t.submittedAt||t.startedAt),tone:t.status==='Completed'?'ok':''}))))}</div>`;
+ const open=mine.filter(t=>t.status!=='Completed');
+ const prioRank=p=>({Urgent:0,High:1,Normal:2}[p]??3);
+ const next=by('In Progress')[0]||[...by('Assigned')].sort((a,b)=>prioRank(a.priority)-prioRank(b.priority))[0];
+ const returned=mine.filter(t=>t.status==='In Progress'&&t.inspection&&t.inspection.result!=='Approved');
+ const insp=roomsPendingInspection();
+ const summary=open.length?`You have ${plural(by('Assigned').length+by('In Progress').length,'room')} to clean${by('Ready for Inspection').length?` and ${by('Ready for Inspection').length} waiting for inspection`:''}.`:'All your rooms are done for now.';
+ const head=dashHead(summary,`<button class="btn btn-secondary" data-report-room="" type="button">${icon('flag','sm')}Report room issue</button>`);
+ let hero='';
+ if(next){
+   const startNow=next.status==='Assigned';
+   hero=`<section class="next-up" aria-label="Next room">
+     <div class="next-room">${next.room}</div>
+     <div style="min-width:0"><p class="eyebrow">${startNow?'Up next':'In progress'}</p><h2>${esc(next.type)} · Room ${next.room}</h2><p>${esc(next.note||'No special instructions.')} ${/high|urgent/i.test(next.priority)?`· <strong style="color:#f1d3a6">${esc(next.priority)} priority</strong>`:''}</p></div>
+     <div class="actions"><button class="btn btn-light btn-lg" data-task-advance="${next.id}" type="button">${icon(startNow?'sparkle':'check','sm')}${startNow?'Start cleaning':'Submit for inspection'}</button></div>
+   </section>`;
+ }
+ const ret=returned.length?`<div class="callout warning" style="margin-bottom:16px">${icon('refresh','sm')}<div><strong>Returned for recleaning:</strong> ${returned.map(t=>`Room ${t.room}${t.inspection.note?` — “${esc(t.inspection.note)}”`:''}`).join('; ')}</div></div>`:'';
+ const pipe=`<div class="pipeline">${[['Assigned','To do','not started'],['In Progress','Cleaning','in progress'],['Ready for Inspection','Waiting','for supervisor'],['Completed','Approved','today']].map(([s,l,sub])=>`<div class="pipe"><span class="pipe-label">${l}</span><span class="pipe-value">${by(s).length}</span><span class="pipe-sub">${sub}</span></div>`).join('')}</div>`;
+ const myRooms=card('My rooms','Update each room as you go',
+   open.length?`<div class="card-body"><div class="my-tasks">${open.map(myTaskRow).join('')}</div></div>`:empty('All your rooms are done. Nice work.','New assignments will appear here.',{ok:true}),
+   viewAll('housekeeping','Task board'),{flush:true,icon:'sparkle',count:open.length});
+ const inspCard=insp.length?card('Checkout inspections','Inspect these rooms before the guest can check out',
+   listOf(insp.map(r=>listItem({lead:r.n,leadTone:'warning',title:esc(r.stay.guest),sub:`${r.stay.ref} · departing · deposit ${money(r.stay.deposit||0)}`,actions:`<button class="btn btn-primary btn-sm" data-inspect-room="${r.n}" type="button">Inspect</button>`}))),
+   viewAll('inspection','All inspections'),{flush:true,icon:'clipboard',count:insp.length,attn:true}):'';
+ const progress=card('Shift progress','How far along your rooms are',
+   progressRow('Approved by supervisor',by('Completed').length,mine.length)+progressRow('Started',mine.filter(t=>t.status!=='Assigned').length,mine.length)
+   +`<div class="callout info mt-4">${icon('info','sm')}<span>Rooms only become available once your supervisor approves the inspection.</span></div>`,'',{icon:'trend'});
+ const checks=card('What the supervisor checks','Use this as your cleaning checklist',
+   `<ul class="checks-ref" style="list-style:none;margin:0;padding:0;display:grid;gap:8px">${INSPECT_CHECKS.map(c=>`<li style="display:flex;gap:8px;align-items:center;font-size:var(--fs-sm);color:var(--text-2)">${icon('check-circle','sm')}${c}</li>`).join('')}</ul>`,'',{icon:'clipboard'});
+ const activity=card('Recent activity','Your latest task updates',feed(mine.filter(t=>t.startedAt).slice(-5).reverse().map(t=>({title:`Room ${t.room} · ${t.status}`,text:t.type,time:fmtTime(t.submittedAt||t.startedAt),tone:t.status==='Completed'?'ok':''}))),'',{icon:'history'});
+ return head+hero+ret+pipe+`<div class="grid-main"><div class="stack">${inspCard}${myRooms}</div><div class="stack">${progress}${checks}${activity}</div></div>`;
 }
 
 /* ---- Supervisor ---- */
-function svDash(head){
- const inspect=tasks.filter(t=>t.status==='Ready for Inspection');
+function svDash(){
+ const inspect=readyForInspection();
+ const unassigned=unassignedTasks();
  const assess=tickets.filter(t=>t.stage==='assessment');
- const active=tasks.filter(t=>['Assigned','In Progress'].includes(t.status));
+ const checkout=tasks.filter(t=>t.kind==='inspection'&&t.status!=='Completed');
  const low=lowStock();
+ const restock=restockRequests.filter(r=>r.status==='Open');
  const completed=tasks.filter(t=>t.status==='Completed');
  const firstPass=completed.filter(t=>!t.inspection?.reworked).length;
- return head('Inspections, workload balance, reported issues and supplies.',
-   `<button class="secondary-button" data-go="inventory">Inventory</button><button class="primary-button" data-dash-assign="1">+ Assign Task</button>`)
- +statCards([
-   ['Awaiting inspection',inspect.length,'rooms submitted',inspect.length?'warn':''],
-   ['Active tasks',active.length,'assigned or in progress'],
-   ['Issues to assess',assess.length,'reported by housekeepers',assess.length?'warn':''],
-   ['Low stock items',low.length,'below reorder level',low.length?'warn':'']
- ])
- +`<div class="dashboard-grid">
-   ${panel('Inspection Queue','Approve a room before it goes back into service',
-     inspect.length?`<div class="task-rows">${inspect.map(taskRow).join('')}</div>`:emptyState('No rooms waiting for inspection.'),
-     `<button class="text-button" data-go="housekeeping">Task board</button>`)}
-   ${panel('Staff Workload','Balance new assignments across the team',workloadBars(),`<button class="text-button" data-dash-assign="1">Assign</button>`)}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Cleaning Performance','Quality and throughput this shift',
-     progressRow('Rooms completed',completed.length,tasks.length)
-     +progressRow('Passed first inspection',firstPass,completed.length||1)
-     +`<div class="metric-list tight"><div><span>Average rooms per housekeeper</span><strong>${(tasks.length/housekeepers.length).toFixed(1)}</strong></div><div><span>Rooms returned for recleaning</span><strong>${completed.filter(t=>t.inspection?.reworked).length}</strong></div></div>`)}
-   ${panel('Inventory Alerts','Items at or below reorder level',
-     low.length?`<div class="list-rows">${low.map(i=>`<div class="list-row"><div class="lr-main"><strong>${esc(i.item)}</strong><p>${i.category}</p></div><div class="lr-side"><strong class="warn-text">${i.stock}</strong><small>reorder at ${i.reorder}</small></div></div>`).join('')}</div>`:emptyState('All supplies are above reorder level.'),
-     `<button class="text-button" data-go="inventory">Manage</button>`)}
- </div>
- ${assess.length?`<div class="mt">${panel('Issues Awaiting Your Assessment','Set priority and room impact before these reach maintenance',`<div class="list-rows">${assess.map(t=>`<div class="list-row"><div class="lr-main"><strong>Room ${t.room} · ${esc(t.issue)}</strong><p>${t.category} · reported by ${esc(t.reportedBy)}</p></div><button class="mini-button primary" data-assess="${t.id}">Assess</button></div>`).join('')}</div>`)}</div>`:''}`;
+ const waiting=inspect.length+unassigned.length+assess.length+checkout.length;
+ const head=dashHead(waiting?`${plural(waiting,'item')} waiting on you — inspections first, then assignments.`:'Nothing is waiting on you right now.',
+   `<button class="btn btn-secondary" data-go="housekeeping" type="button">${icon('sparkle','sm')}Task board</button><button class="btn btn-secondary" data-go="inventory" type="button">${icon('package','sm')}Inventory</button>`);
+ const k=kpis([
+   {label:'Ready for inspection',value:inspect.length,sub:'rooms submitted by housekeepers',icon:'clipboard',attn:inspect.length>0,attr:'data-go="housekeeping"'},
+   {label:'Awaiting assignment',value:unassigned.length,sub:'rooms with no housekeeper',icon:'users',attn:unassigned.length>0,attr:'data-go="housekeeping"'},
+   {label:'Issues to assess',value:assess.length,sub:'reported by housekeepers',icon:'tool',attn:assess.length>0,attr:'data-go="maintenance"'},
+   {label:'Low stock items',value:low.length,sub:`${restock.length} restock request${restock.length===1?'':'s'} open`,icon:'package',attn:low.length>0,attr:'data-go="inventory"'}
+ ]);
+ const queue=card('Inspection queue','Approve a room before it goes back into service',
+   inspect.length?listOf(inspect.map(t=>listItem({lead:t.room,leadTone:'info',title:`${esc(t.type)}`,sub:`Submitted by ${esc(t.staff)}${t.submittedAt?` · ${fmtTime(t.submittedAt)}`:''}${t.reworked?' · re-submitted':''}`,actions:`<button class="btn btn-primary btn-sm" data-inspect="${t.id}" type="button">Inspect</button>`}))):empty('No rooms waiting for inspection.','',{compact:true,ok:true}),
+   viewAll('housekeeping','Task board'),{flush:inspect.length>0,icon:'clipboard',count:inspect.length,attn:true});
+ const unas=card('Awaiting assignment','Created automatically after checkouts and transfers',
+   unassigned.length?listOf(unassigned.map(t=>listItem({lead:t.room,leadTone:'warning',title:esc(t.type),sub:esc(t.note||'No note'),meta:prioTag(t.priority),actions:`<button class="btn btn-primary btn-sm" data-reassign="${t.id}" type="button">Assign</button>`}))):empty('Every room has a housekeeper.','',{compact:true,ok:true}),
+   '',{flush:unassigned.length>0,icon:'users',count:unassigned.length,attn:true});
+ const issues=card('Issues awaiting your assessment','Set priority and room impact before these reach maintenance',
+   assess.length?listOf(assess.map(t=>listItem({lead:t.room,leadTone:'warning',title:esc(t.issue),sub:`${t.category} · reported by ${esc(t.reportedBy)} · ${fmtDT(t.reportedAt)}`,actions:`<button class="btn btn-primary btn-sm" data-assess="${t.id}" type="button">Assess</button>`}))):empty('No reported issues to assess.','',{compact:true,ok:true}),
+   viewAll('maintenance','Maintenance'),{flush:assess.length>0,icon:'tool',count:assess.length,attn:true});
+ const checkoutCard=checkout.length?card('Checkout inspections','Guests waiting on a room inspection before checkout',
+   listOf(checkout.map(t=>{const rm=rooms.find(x=>x.n===t.room);return listItem({lead:t.room,leadTone:'warning',title:esc(rm&&rm.stay?rm.stay.guest:'Guest'),sub:esc(t.note),actions:rm&&rm.stay?`<button class="btn btn-primary btn-sm" data-inspect-room="${t.room}" type="button">Inspect</button>`:''});})),
+   viewAll('inspection','Inspections'),{flush:true,icon:'shield',count:checkout.length,attn:true}):'';
+ const workload=card('Team workload','Balance new assignments across the team',workloadBars(),`<button class="link-btn" data-dash-assign="1" type="button">Assign${icon('chevron-right','xs')}</button>`,{icon:'users'});
+ const perf=card('Cleaning performance','Quality and throughput this shift',
+   progressRow('Rooms completed',completed.length,tasks.length)+progressRow('Passed first inspection',firstPass,completed.length||1)
+   +rows([['Average rooms per housekeeper',(tasks.length/housekeepers.length).toFixed(1)],['Rooms returned for recleaning',completed.filter(t=>t.inspection?.reworked).length]]),'',{icon:'trend'});
+ const inv=card('Inventory alerts','Items at or below reorder level',
+   low.length?listOf(low.map(i=>listItem({title:esc(i.item),sub:i.category,meta:`<span class="warn-text">${i.stock} left</span><small>reorder at ${i.reorder}</small>`}))):empty('All supplies are above reorder level.','',{compact:true,ok:true}),
+   viewAll('inventory','Manage'),{flush:low.length>0,icon:'package',count:low.length,attn:true});
+ return head+k+`<div class="grid-main"><div class="stack">${queue}${checkoutCard}${unas}${issues}</div><div class="stack">${workload}${perf}${inv}</div></div>`;
 }
 function workloadBars(){
  const counts=housekeepers.map(h=>[h,tasks.filter(t=>t.staff===h&&t.status!=='Completed').length]);
  const max=Math.max(1,...counts.map(c=>c[1]));
- return `<div class="workload-list">${counts.map(([h,c])=>`<div class="workload-row"><span class="wl-name">${h}</span><div class="wl-bar"><i style="width:${c/max*100}%"></i></div><span class="wl-count">${c} active</span><span class="wl-flag ${c===0?'idle':c>=max&&max>1?'busy':'ok'}">${c===0?'Free':c>=max&&max>1?'Busiest':'Balanced'}</span></div>`).join('')}</div>`;
+ return `<div class="workload">${counts.map(([h,c])=>{const flag=c===0?chip('Free','success',{sm:true}):c>=max&&max>1?chip('Busiest','warning',{sm:true}):chip('Balanced','neutral',{sm:true});return `<div class="wl-row"><span class="wl-name"><span class="avatar sm">${initials(h)}</span><span>${h}</span></span><div class="wl-bar"><i class="${c>=max&&max>1?'busy':''}" style="width:${c/max*100}%"></i></div><span class="wl-count">${c} active ${flag}</span></div>`;}).join('')}</div>`;
 }
 
 /* ---- Maintenance ---- */
-function mtDash(head){
+function mtDash(){
  const mine=tickets.filter(t=>t.stage==='assigned');
  const high=mine.filter(t=>t.priority==='High');
  const parts=mine.filter(t=>t.status==='Waiting for parts');
  const doneToday=tickets.filter(t=>t.stage==='resolved'&&t.resolvedAt?.slice(0,10)===T).length;
- return head('Work orders forwarded by the housekeeping supervisor.',
-   `<button class="primary-button" data-go="maintenance">Open Work Orders</button>`)
- +statCards([
-   ['Active work orders',mine.length,'assigned to maintenance'],
-   ['High priority',high.length,'need attention first',high.length?'warn':''],
-   ['Waiting for parts',parts.length,'blocked until delivery'],
-   ['Resolved today',doneToday,'completed repairs']
- ])
- +`<div class="dashboard-grid">
-   ${panel('Work Order Queue','Ordered by priority',
-     mine.length?`<div class="list-rows">${[...mine].sort(pri).map(t=>`<div class="list-row"><div class="lr-main"><strong>Room ${t.room} · ${esc(t.issue)}</strong><p>${t.category} · ${t.status}${t.eta?` · ETA ${fmtDT(t.eta)}`:''}</p></div><span class="badge ${priClass(t.priority)}">${t.priority}</span><button class="mini-button primary" data-ticket="${t.id}">Update</button></div>`).join('')}</div>`:emptyState('No open work orders.'),
-     `<button class="text-button" data-go="maintenance">All tickets</button>`)}
-   ${panel('Rooms Affected','Rooms currently held by maintenance',
-     rooms.filter(r=>r.status==='maintenance').length?`<div class="list-rows">${rooms.filter(r=>r.status==='maintenance').map(r=>{const t=tickets.find(x=>x.room===r.n&&x.stage!=='resolved');return `<div class="list-row"><div class="lr-main"><strong>Room ${r.n}</strong><p>${t?esc(t.issue):'Held for maintenance'}</p></div><small class="warn-text">Offline</small></div>`;}).join('')}</div>`:emptyState('No rooms are offline.'))}
- </div>
- <div class="mt">${panel('Recently Resolved','Your completed repairs',
-   tickets.filter(t=>t.stage==='resolved').length?feed(tickets.filter(t=>t.stage==='resolved').slice(0,5).map(t=>({title:`Room ${t.room} · ${t.issue}`,text:`${t.category}${t.parts?` · parts: ${t.parts}`:''}`,time:fmtDT(t.resolvedAt),tone:'ok'}))):emptyState('No repairs resolved yet.'))}</div>`;
+ const offline=rooms.filter(r=>r.status==='maintenance');
+ const etas=[...mine].filter(t=>t.eta).sort((a,b)=>a.eta.localeCompare(b.eta));
+ const head=dashHead(mine.length?`${plural(mine.length,'work order')} forwarded by the supervisor${high.length?` · <span class="danger-text">${high.length} high priority</span>`:''}.`:'No open work orders right now.',
+   `<button class="btn btn-secondary" data-go="rooms" type="button">${icon('grid','sm')}Room board</button>`);
+ const k=kpis([
+   {label:'Active work orders',value:mine.length,sub:`${mine.filter(t=>t.assignedTo===currentUser.name).length} assigned to you`,icon:'tool',attr:'data-go="maintenance"'},
+   {label:'High priority',value:high.length,sub:'need attention first',icon:'alert',attn:high.length>0},
+   {label:'Waiting for parts',value:parts.length,sub:'blocked until delivery',icon:'box'},
+   {label:'Resolved today',value:doneToday,sub:'completed repairs',icon:'check-circle'}
+ ]);
+ const queue=card('Work order queue','Ordered by priority',
+   mine.length?listOf([...mine].sort(pri).map(t=>listItem({lead:t.room,leadTone:t.priority==='High'?'danger':'',title:esc(t.issue),sub:`${t.category} · ${t.status}${t.assignedTo?` · ${t.assignedTo===currentUser.name?'you':esc(t.assignedTo)}`:''}`,meta:`${prioTag(t.priority)}${t.eta?`<small>ETA ${fmtDT(t.eta)}</small>`:''}`,actions:`<button class="btn btn-primary btn-sm" data-ticket="${t.id}" type="button">Update</button>`}))):empty('No open work orders.','',{compact:true,ok:true}),
+   viewAll('maintenance','All work orders'),{flush:mine.length>0,icon:'tool',count:mine.length});
+ const upcoming=card('Upcoming ETAs','Estimated completion, soonest first',
+   etas.length?`<div class="timeline">${etas.map(t=>{const late=new Date(t.eta)<new Date();return `<div class="tl-item ${late?'warn':''}"><span class="tl-dot"></span><div class="tl-body"><strong>${fmtDT(t.eta)} · Room ${t.room}</strong><small>${esc(t.issue)}${late?' · <span class="warn-text">past ETA</span>':''}</small></div></div>`;}).join('')}</div>`:empty('No ETAs recorded.','',{compact:true}),'',{icon:'clock'});
+ const affected=card('Rooms offline','Rooms currently held by maintenance',
+   offline.length?listOf(offline.map(r=>{const t=openTicketFor(r.n);return listItem({lead:r.n,leadTone:'danger',title:t?esc(t.issue):'Held for maintenance',sub:t?`${t.status}${t.eta?` · ETA ${fmtDT(t.eta)}`:''}`:'',meta:roomChip('maintenance')});})):empty('No rooms are offline.','',{compact:true,ok:true}),'',{flush:offline.length>0,icon:'grid',count:offline.length});
+ const resolved=tickets.filter(t=>t.stage==='resolved');
+ const recent=card('Recently resolved','Completed repairs',
+   resolved.length?feed(resolved.slice(0,5).map(t=>({title:`Room ${t.room} · ${esc(t.issue)}`,text:`${t.category}${t.parts?` · parts: ${esc(t.parts)}`:''}`,time:fmtDT(t.resolvedAt),tone:'ok'}))):empty('No repairs resolved yet.','',{compact:true}),'',{icon:'check-circle'});
+ return head+k+`<div class="grid-main"><div class="stack">${queue}${recent}</div><div class="stack">${upcoming}${affected}</div></div>`;
 }
 const pri=(a,b)=>({High:0,Medium:1,Low:2}[a.priority]??3)-({High:0,Medium:1,Low:2}[b.priority]??3);
 const priClass=p=>p==='High'?'high':p==='Medium'?'medium':'low';
 
-/* ---- Manager ---- */
-function mgDash(head){
+/* ---- Operations manager ---- */
+function mgDash(){
  const rev=revenueToday();
  const open=openTickets();
  const low=lowStock();
  const completed=tasks.filter(t=>t.status==='Completed');
- return head('Occupancy, revenue, service performance and supplies across the property.',
-   `<button class="secondary-button" data-go="transactions">Payments</button><button class="primary-button" data-go="reports">View Reports</button>`)
- +statCards([
-   ['Occupancy rate',occupancyRate()+'%',`${roomCount('occupied')} of ${rooms.length} rooms`],
-   ["Today's revenue",money(rev),`${txToday().length} transactions`],
-   ['Open work orders',open.length,`${open.filter(t=>t.priority==='High').length} high priority`,open.filter(t=>t.priority==='High').length?'warn':''],
-   ['Low stock items',low.length,'need reordering',low.length?'warn':'']
- ])
- +`<div class="dashboard-grid">
-   ${panel('Revenue Snapshot','Last 7 days',barChart(revenueSeries(7).map(d=>[d.label,d.value,money(d.value)])),`<button class="text-button" data-go="reports">Reports</button>`)}
-   ${panel('Room Status Distribution','Live inventory of rooms',distBars([['Available',roomCount('available'),'available'],['Occupied',roomCount('occupied'),'occupied'],['Cleaning',roomCount('cleaning'),'cleaning'],['Maintenance',roomCount('maintenance'),'maintenance']]))}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Housekeeping Performance','Task throughput this shift',
-     progressRow('Rooms completed',completed.length,tasks.length)
-     +progressRow('Awaiting inspection',tasks.filter(t=>t.status==='Ready for Inspection').length,tasks.length)
-     +`<div class="metric-list tight"><div><span>Active housekeepers</span><strong>${housekeepers.length}</strong></div><div><span>Returned for recleaning</span><strong>${completed.filter(t=>t.inspection?.reworked).length}</strong></div></div>`)}
-   ${panel('Maintenance Summary','Work order health',
-     `<div class="metric-list tight"><div><span>Awaiting assessment</span><strong>${tickets.filter(t=>t.stage==='assessment').length}</strong></div><div><span>In progress</span><strong>${tickets.filter(t=>t.stage==='assigned').length}</strong></div><div><span>Resolved (all time)</span><strong>${tickets.filter(t=>t.stage==='resolved').length}</strong></div><div><span>Rooms offline</span><strong>${roomCount('maintenance')}</strong></div></div>`,
-     `<button class="text-button" data-go="maintenance">Open</button>`)}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Checkout Inspections','Damage control across departures',
-     `<div class="metric-list tight"><div><span>Rooms pending inspection</span><strong>${roomsPendingInspection().length}</strong></div><div><span>Pending damage payments</span><strong>${pendingDamagePayments().length}</strong></div><div><span>Incidents today</span><strong>${incidents.filter(i=>i.date.slice(0,10)===T).length}</strong></div><div><span>Deposit refunds today</span><strong>${money(depositRefundsToday().reduce((a,t)=>a+Math.abs(t.amount),0))}</strong></div></div>`,
-     `<button class="text-button" data-go="incidents">Incidents</button>`)}
-   ${panel('Rooms with Reported Damages','Open incidents by room',
-     incidents.filter(i=>i.status==='Pending').length?`<div class="list-rows">${incidents.filter(i=>i.status==='Pending').slice(0,5).map(i=>`<div class="list-row"><div class="lr-main"><strong>Room ${i.room} · ${esc(i.item)}</strong><p>${i.category} · ${esc(i.guest)}</p></div><div class="lr-side"><strong class="warn-text">${money(incidentCost(i))}</strong></div></div>`).join('')}</div>`:emptyState('No open damage incidents.'),
-     `<button class="text-button" data-go="incidents">All incidents</button>`)}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Inventory Alerts','Items at or below reorder level',
-     low.length?`<div class="list-rows">${low.map(i=>`<div class="list-row"><div class="lr-main"><strong>${esc(i.item)}</strong><p>${i.category}</p></div><div class="lr-side"><strong class="warn-text">${i.stock}</strong><small>reorder at ${i.reorder}</small></div></div>`).join('')}</div>`:emptyState('All supplies are healthy.'),
-     `<button class="text-button" data-go="inventory">Inventory</button>`)}
-   ${panel('Staff On Shift','Current attendance',`<div class="list-rows">${attendance.map(a=>`<div class="list-row"><div class="lr-main"><strong>${a.name}</strong><p>${a.role}</p></div><div class="lr-side"><small>In ${a.in}</small></div><span class="badge low">${a.status}</span></div>`).join('')}</div>`)}
- </div>
- <div class="mt">${panel('Recent Activity','Latest across the property',feed(recentActivity()))}</div>`;
+ const highOpen=open.filter(t=>t.priority==='High').length;
+ const head=dashHead(`Occupancy is <strong>${occupancyRate()}%</strong> with ${plural(roomCount('available'),'room')} available and ${money(rev)} collected today.`,
+   `<button class="btn btn-secondary" data-go="transactions" type="button">${icon('card','sm')}Payments</button>`);
+ const k=kpis([
+   {label:'Occupancy rate',value:occupancyRate()+'%',sub:`${roomCount('occupied')} of ${rooms.length} rooms occupied`,icon:'bed',attr:'data-go="rooms"'},
+   {label:"Today's revenue",value:money(rev),sub:`${plural(txToday().length,'transaction')}`,icon:'wallet',attr:'data-go="transactions"'},
+   {label:'Open work orders',value:open.length,sub:`${highOpen} high priority · ${roomCount('maintenance')} room${roomCount('maintenance')===1?'':'s'} offline`,icon:'tool',attn:highOpen>0,attr:'data-go="maintenance"'},
+   {label:'Low stock items',value:low.length,sub:'at or below reorder level',icon:'package',attn:low.length>0,attr:'data-go="inventory"'}
+ ]);
+ const issues=[
+   roomsPendingInspection().length&&listItem({lead:roomsPendingInspection().length,leadTone:'warning',title:'Rooms pending checkout inspection',sub:'Guests waiting on housekeeping',attr:'data-go="inspection"'}),
+   pendingDamagePayments().length&&listItem({lead:pendingDamagePayments().length,leadTone:'danger',title:'Checkouts on hold for damage payment',sub:'Front desk to collect',attr:'data-go="incidents"'}),
+   tickets.filter(t=>t.stage==='assessment').length&&listItem({lead:tickets.filter(t=>t.stage==='assessment').length,leadTone:'warning',title:'Room issues awaiting supervisor assessment',sub:'Not yet forwarded to maintenance',attr:'data-go="maintenance"'}),
+   readyForInspection().length&&listItem({lead:readyForInspection().length,leadTone:'info',title:'Rooms ready for cleaning inspection',sub:'Waiting for supervisor approval',attr:'data-go="housekeeping"'}),
+   unassignedTasks().length&&listItem({lead:unassignedTasks().length,leadTone:'warning',title:'Cleaning tasks with no housekeeper',sub:'Created after checkouts',attr:'data-go="housekeeping"'}),
+   low.length&&listItem({lead:low.length,leadTone:'warning',title:'Supplies below reorder level',sub:low.map(i=>i.item).join(', '),attr:'data-go="inventory"'})
+ ].filter(Boolean);
+ const ops=card('Operational issues','Anything blocking a room or a guest',issues.length?listOf(issues):empty('No operational issues right now.','',{compact:true,ok:true}),'',{flush:issues.length>0,icon:'alert-circle',count:issues.length,attn:true});
+ const revenue=card('Revenue · last 7 days','Payments received per day, net of refunds',barChart(revenueSeries(7).map(d=>[d.label,d.value,money(d.value)])),viewAll('reports','Reports'),{icon:'trend'});
+ const status=card('Room status','Live inventory of rooms',roomStatusBar(),viewAll('rooms','Room board'),{icon:'grid'});
+ const hk=card('Housekeeping','Task throughput this shift',
+   progressRow('Rooms completed',completed.length,tasks.length)+progressRow('Awaiting inspection',readyForInspection().length,tasks.length)
+   +rows([['Active housekeepers',housekeepers.length],['Returned for recleaning',completed.filter(t=>t.inspection?.reworked).length]]),viewAll('housekeeping','Open'),{icon:'sparkle'});
+ const mt=card('Maintenance','Work order health',
+   rows([['Awaiting assessment',tickets.filter(t=>t.stage==='assessment').length],['In progress',tickets.filter(t=>t.stage==='assigned').length],['Resolved (all time)',tickets.filter(t=>t.stage==='resolved').length],['Rooms offline',roomCount('maintenance')]]),viewAll('maintenance','Open'),{icon:'tool'});
+ const reqDone=guestRequests.filter(r=>r.status==='Delivered').length;
+ const req=card('Guest requests','Service requests this period',
+   rows([['Open requests',guestRequests.filter(r=>r.status!=='Delivered').length],['Delivered',reqDone],['Fulfilment rate',`${guestRequests.length?Math.round(reqDone/guestRequests.length*100):0}%`],['Charged to rooms',money(guestRequests.reduce((a,r)=>a+r.items.reduce((s,i)=>s+i.price*i.qty,0),0))]]),viewAll('requests','Open'),{icon:'bell-desk'});
+ const insp=card('Checkout inspections','Damage control across departures',
+   rows([['Rooms pending inspection',roomsPendingInspection().length],['Pending damage payments',pendingDamagePayments().length],['Incidents today',incidents.filter(i=>i.date.slice(0,10)===T).length],['Deposit refunds today',money(depositRefundsToday().reduce((a,t)=>a+Math.abs(t.amount),0))]]),viewAll('incidents','Incidents'),{icon:'shield'});
+ const pendingInc=incidents.filter(i=>i.status==='Pending');
+ const dmg=card('Rooms with reported damages','Open incidents by room',
+   pendingInc.length?listOf(pendingInc.slice(0,5).map(i=>listItem({lead:i.room,leadTone:'danger',title:esc(i.item),sub:`${i.category} · ${esc(i.guest)}`,meta:`<span class="warn-text">${money(incidentCost(i))}</span>`,attr:`data-incident="${i.id}"`}))):empty('No open damage incidents.','',{compact:true,ok:true}),
+   viewAll('incidents','All incidents'),{flush:pendingInc.length>0,icon:'alert',count:pendingInc.length});
+ const inv=card('Inventory alerts','Items at or below reorder level',
+   low.length?listOf(low.map(i=>listItem({title:esc(i.item),sub:i.category,meta:`<span class="warn-text">${i.stock} left</span><small>reorder at ${i.reorder}</small>`}))):empty('All supplies are healthy.','',{compact:true,ok:true}),
+   viewAll('inventory','Inventory'),{flush:low.length>0,icon:'package'});
+ const staff=card('Staff on shift','Current attendance',listOf(attendance.map(a=>listItem({lead:`<span class="avatar sm" style="width:100%;height:100%;border-radius:8px">${initials(a.name)}</span>`,title:a.name,sub:a.role,meta:`${chip(a.status,a.status==='On shift'?'success':'neutral',{dot:true})}<small>In ${a.in}${a.out&&a.out!=='—'?` · out ${a.out}`:''}</small>`}))),'',{flush:true,icon:'users'});
+ const activity=card('Recent activity','Latest across the property',feed(recentActivity()),'',{icon:'history'});
+ return head+k+`<div class="grid-main"><div class="stack">${revenue}${ops}</div><div class="stack">${status}${insp}</div></div>
+   <div class="grid-3 section-gap">${hk}${mt}${req}</div>
+   <div class="grid-2 section-gap">${dmg}${inv}</div>
+   <div class="grid-2 section-gap">${staff}${activity}</div>`;
 }
 function recentActivity(){
  const a=[];
- transactions.slice(0,3).forEach(t=>a.push({title:`${t.type} · ${money(t.amount)}`,text:`${t.guest} · ${t.method}`,time:fmtDT(t.when),tone:t.amount<0?'warn':'ok'}));
+ transactions.slice(0,3).forEach(t=>a.push({title:`${t.type} · ${money(t.amount)}`,text:`${esc(t.guest)} · ${t.method}`,time:fmtDT(t.when),tone:t.amount<0?'warn':'ok'}));
  tasks.filter(t=>t.status==='Completed').slice(0,2).forEach(t=>a.push({title:`Room ${t.room} approved`,text:`${t.type} by ${t.staff}`,time:'today',tone:'ok'}));
- openTickets().slice(0,2).forEach(t=>a.push({title:`Room ${t.room} · ${t.issue}`,text:t.status,time:fmtDT(t.reportedAt),tone:'warn'}));
+ openTickets().slice(0,2).forEach(t=>a.push({title:`Room ${t.room} · ${esc(t.issue)}`,text:t.status,time:fmtDT(t.reportedAt),tone:'warn'}));
  return a.slice(0,7);
 }
 function revenueSeries(days){
@@ -567,49 +846,90 @@ function revenueSeries(days){
 /* ============================================================
    RESERVATIONS
    ============================================================ */
-function statusBadge(s){const c={Confirmed:'low','Pending payment':'medium','Needs review':'high','Checked in':'info','Pending Room Inspection':'medium','Inspection Completed':'info','Pending Damage Payment':'high','Checked Out':'','Cancelled':''}[s]||'';return `<span class="badge ${c}">${s}</span>`;}
+// The next step for a booking, limited to pages the user may open.
+function resPrimaryAction(r,size='btn-sm'){
+ const s=r.status;
+ if(['Confirmed','Pending payment','Needs review'].includes(s)&&can('checkin'))
+   return `<button class="btn btn-primary ${size}" data-checkin-res="${r.ref}" type="button">${resBal(r)>0?'Collect & check in':'Check in'}</button>`;
+ if(s==='Checked in'&&can('checkin'))return `<button class="btn btn-secondary ${size}" data-checkout-room="${r.room}" type="button">Check out</button>`;
+ if(s==='Pending Room Inspection'&&can('inspection'))return `<button class="btn btn-secondary ${size}" data-open-inspection="${r.room}" type="button">View inspection</button>`;
+ if((s==='Inspection Completed'||s==='Pending Damage Payment')&&can('checkin'))return `<button class="btn btn-primary ${size}" data-checkout-room="${r.room}" type="button">Finish checkout</button>`;
+ return '';
+}
 function renderReservations(){
  const q=($('reservationSearch').value||'').trim().toLowerCase();
  const sf=$('reservationStatusFilter').value,src=$('reservationSourceFilter').value;
  const sources=[...new Set(reservations.map(r=>r.source))];
- if($('reservationSourceFilter').options.length!==sources.length+1)
+ if($('reservationSourceFilter').options.length!==sources.length+1){
+   const keep=src;
    $('reservationSourceFilter').innerHTML='<option value="all">All sources</option>'+sources.map(s=>`<option>${s}</option>`).join('');
+   $('reservationSourceFilter').value=sources.includes(keep)?keep:'all';
+ }
  // Search matches guest name, reference, room number, and booking source.
+ const statusOk=r=>sf==='all'||(sf==='_arrivals'?arrivalsToday().includes(r):sf==='_due'?resBal(r)>0&&!['Checked Out','Cancelled'].includes(r.status):r.status===sf);
  const list=reservations.filter(r=>{
    const hay=`${r.guest} ${r.ref} ${r.room} ${r.source}`.toLowerCase();
-   return (!q||hay.includes(q))&&(sf==='all'||r.status===sf)&&(src==='all'||r.source===src);
+   return (!q||hay.includes(q))&&statusOk(r)&&(src==='all'||r.source===src);
  });
- $('reservationStats').innerHTML=statCards([
-   ["Arrivals today",arrivalsToday().length,'expected check-ins'],
-   ['Pending payment',reservations.filter(r=>r.status==='Pending payment').length,'not yet settled'],
-   ['Needs review',reservations.filter(r=>r.status==='Needs review').length,'require staff action'],
-   ['Online bookings',onlineBookings.length,'waiting to import']
- ]).replace('stats-grid','stats-grid');
- $('reservationTable').innerHTML=list.map(r=>`<tr>
-   <td><strong>${r.ref}</strong></td>
-   <td>${esc(r.guest)}<small>${esc(r.contact)}</small></td>
-   <td><span class="source-pill">${r.source}</span></td>
-   <td>${fmtDay(r.checkIn)} – ${fmtDay(r.checkOut)}<small>${nights(r.checkIn,r.checkOut)} night${nights(r.checkIn,r.checkOut)>1?'s':''}</small></td>
-   <td>${r.room}</td>
-   <td>${r.adults}A${r.kids?` · ${r.kids}C`:''}</td>
-   <td>${resBal(r)>0?`<span class="warn-text">${money(resBal(r))} due</span>`:'<span class="ok-text">Paid</span>'}</td>
-   <td><button class="status-action" data-status-res="${r.ref}" title="${statusHint(r.status)}">${statusBadge(r.status)}</button></td>
-   <td><button class="mini-button" data-view-res="${r.ref}">View</button></td>
- </tr>`).join('')||`<tr><td colspan="9">${emptyState(q?`No reservations match “${esc(q)}”.`:'No reservations match these filters.','Try a guest name, reference, room number, or booking source.')}</td></tr>`;
- document.querySelectorAll('[data-view-res]').forEach(b=>b.onclick=()=>viewReservation(b.dataset.viewRes));
- document.querySelectorAll('[data-status-res]').forEach(b=>b.onclick=()=>statusAction(b.dataset.statusRes));
+ const due=reservations.filter(r=>resBal(r)>0&&!['Checked Out','Cancelled'].includes(r.status));
+ $('reservationStats').innerHTML=statStrip([
+   {label:'Arriving today',value:arrivalsToday().length,sub:'expected check-ins',attr:'data-res-filter="_arrivals"',active:sf==='_arrivals'},
+   {label:'Balance due',value:due.length,sub:money(due.reduce((a,r)=>a+resBal(r),0))+' outstanding',attr:'data-res-filter="_due"',active:sf==='_due',attn:due.length>0},
+   {label:'Needs review',value:reservations.filter(r=>r.status==='Needs review').length,sub:'require staff action',attr:'data-res-filter="Needs review"',active:sf==='Needs review',attn:reservations.some(r=>r.status==='Needs review')},
+   {label:'In house',value:reservations.filter(r=>r.status==='Checked in').length,sub:'checked-in guests',attr:'data-res-filter="Checked in"',active:sf==='Checked in'},
+   {label:'Online bookings',value:onlineBookings.length,sub:onlineBookings.length?'waiting to import':'all imported',attr:can('checkin')?'data-dash-newres="1"':'',attn:onlineBookings.length>0}
+ ]);
+ $('reservationCount').textContent=`${list.length} of ${reservations.length}`;
+ $('reservationTable').innerHTML=list.map(r=>{const n=nights(r.checkIn,r.checkOut);return `<tr class="clickable" data-view-res="${r.ref}" data-rowclick tabindex="0" aria-label="Open reservation ${r.ref} for ${esc(r.guest)}">
+   <td class="primary-cell" data-label="Guest"><span class="cell-main">${esc(r.guest)}</span><small>${esc(r.contact)}</small></td>
+   <td data-label="Reference"><span class="ref">${r.ref}</span><small><span class="source-pill">${r.source}</span></small></td>
+   <td data-label="Stay">${fmtDay(r.checkIn)} – ${fmtDay(r.checkOut)}<small>${plural(n,'night')}${r.checkIn===T&&['Confirmed','Pending payment','Needs review'].includes(r.status)?' · <span class="warn-text">arrives today</span>':''}</small></td>
+   <td data-label="Room">${r.room==='—'?'<span class="text-3">Not assigned</span>':`<strong>${r.room}</strong>`}<small>${r.roomType}</small></td>
+   <td data-label="Guests">${r.adults}A${r.kids?` · ${r.kids}C`:''}</td>
+   <td class="num" data-label="Balance">${resBal(r)>0?`<span class="warn-text">${money(resBal(r))}</span>`:'<span class="ok-text">Paid</span>'}</td>
+   <td data-label="Status">${statusBadge(r.status)}</td>
+   <td class="actions" data-label="">${resPrimaryAction(r)}</td>
+ </tr>`;}).join('')||`<tr><td colspan="8" class="table-empty">${empty(q?`No reservations match “${esc(q)}”.`:'No reservations match these filters.','Try a guest name, reference, room number, or booking source.',{icon:'search'})}</td></tr>`;
+ bindAll($('reservations'));
 }
-const statusHint=s=>['Confirmed','Checked in','Checked Out','Inspection Completed'].includes(s)?'View receipt':s==='Pending Room Inspection'?'Go to Room Inspections':'Go to Guest Transactions';
+const statusHint=s=>['Confirmed','Checked in','Checked Out','Inspection Completed'].includes(s)?'View reservation':s==='Pending Room Inspection'?'Go to Room Inspections':'Go to Front Desk';
+
+/* Reservation detail drawer (replaces the old receipt modal) */
+const LIFECYCLE=['Confirmed','Checked in','Pending Room Inspection','Inspection Completed','Checked Out'];
+function showReceipt(r){
+ if(!r)return;
+ const n=nights(r.checkIn,r.checkOut);
+ const idx=r.status==='Pending Damage Payment'?3:['Pending payment','Needs review'].includes(r.status)?0:LIFECYCLE.indexOf(r.status);
+ const tx=transactions.filter(t=>t.ref===r.ref);
+ const stage=`<ol class="stepper" style="padding:0;border:0">${LIFECYCLE.map((s,i)=>{const label=i===0?'Booked':i===1?'In house':i===2?'Inspection':i===3?(r.status==='Pending Damage Payment'?'Damage payment':'Inspected'):'Checked out';const cls=i<idx||r.status==='Checked Out'?'done':i===idx?(['Pending payment','Needs review','Pending Damage Payment','Pending Room Inspection'].includes(r.status)?'waiting':'current'):'';return `<li class="step ${cls}"><span class="step-dot">${cls==='done'?icon('check'):i+1}</span>${label}</li>`;}).join('')}</ol>`;
+ const body=`
+   <section class="drawer-section"><h3>${icon('clock','sm')}Progress</h3>${stage}</section>
+   <section class="drawer-section"><h3>${icon('calendar','sm')}Stay</h3>${kv([
+     ['Check-in',fmtDay(r.checkIn)],['Check-out',fmtDay(r.checkOut)],
+     ['Nights',n],['Guests',guestsText(r.adults,r.kids)],
+     ['Room',r.room==='—'?'Assigned at check-in':`Room ${r.room}`,`${r.roomType} · ${ROOM_TYPES[r.roomType].beds}`],['Contact',esc(r.contact)]
+   ])}</section>
+   <section class="drawer-section"><h3>${icon('wallet','sm')}Payment</h3>${rows([['Total charge',money(r.total)],['Amount paid',money(r.paid)],['Balance',`<span class="${resBal(r)>0?'warn-text':'ok-text'}">${money(resBal(r))}</span>`,'total']])}
+     ${resBal(r)>0&&['Confirmed','Pending payment','Needs review'].includes(r.status)?`<div class="callout warning mt-4">${icon('alert-circle','sm')}<span>Balance must be settled before check-in.</span></div>`:''}
+   </section>
+   ${tx.length?`<section class="drawer-section"><h3>${icon('card','sm')}Transactions</h3>${rows(tx.map(t=>[`${t.type} · ${t.method}<small class="cell-sub">${fmtDT(t.when)} · ${esc(t.staff)}</small>`,`<span class="${t.amount<0?'danger-text':''}">${money(t.amount)}</span>`]))}</section>`:''}`;
+ openDrawer({eyebrow:`${r.ref} · ${r.source}`,title:r.guest,meta:`${statusBadge(r.status)}${resBal(r)>0?chip(`${money(resBal(r))} due`,'warning'):''}`,body,foot:resPrimaryAction(r,'')});
+}
+function viewReservation(ref){showReceipt(reservations.find(r=>r.ref===ref));}
 
 /* ============================================================
    CONTEXT-PRESERVING NAVIGATION
    Every action that targets a specific record navigates AND selects
    that record, so staff never land on a generic list and re-search.
    ============================================================ */
-// Switch the Guest Transactions sub-tab (Reserved / Walk-in / Check-out).
 function selectTransactionTab(which){
- document.querySelectorAll('[data-transaction]').forEach(x=>x.classList.toggle('active',x.dataset.transaction===which));
+ document.querySelectorAll('[data-transaction]').forEach(x=>{const on=x.dataset.transaction===which;x.classList.toggle('active',on);x.setAttribute('aria-selected',on);});
  document.querySelectorAll('.transaction-panel').forEach(p=>p.classList.toggle('active',p.id===which));
+}
+function openDeskTab(which){
+ if(!can('checkin'))return;
+ go('checkin');
+ setTimeout(()=>selectTransactionTab(which),20);
 }
 // Open the check-in desk with a specific reservation already selected.
 function openCheckinFor(ref,msg){
@@ -617,8 +937,8 @@ function openCheckinFor(ref,msg){
  setTimeout(()=>{
    selectTransactionTab('reservationCheckin');
    const sel=$('checkinReservation');
-   if(sel&&[...sel.options].some(o=>o.value===ref)){sel.value=ref;$('checkinPaid').value=0;updateCheckinSummary();}
-   if(msg)showToast(msg);
+   if(sel&&[...sel.options].some(o=>o.value===ref))selectCheckinReservation(ref);
+   if(msg)showToast(msg,'info');
  },60);
 }
 // Open the check-out desk with a specific room's guest already selected.
@@ -627,8 +947,18 @@ function openCheckoutFor(roomNo,msg){
  setTimeout(()=>{
    selectTransactionTab('guestCheckout');
    const sel=$('checkoutGuest');
-   if(sel&&[...sel.options].some(o=>o.value===roomNo)){sel.value=roomNo;$('checkoutPaid').value=0;updateCheckoutSummary();}
-   if(msg)showToast(msg);
+   if(sel&&[...sel.options].some(o=>o.value===roomNo))selectCheckoutRoom(roomNo);
+   if(msg)showToast(msg,'info');
+ },60);
+}
+// Open walk-in registration with a specific available room preselected.
+function openWalkinFor(roomNo){
+ go('checkin');
+ setTimeout(()=>{
+   selectTransactionTab('walkinRegistration');
+   const r=rooms.find(x=>x.n===roomNo);
+   if(r&&r.status==='available'){$('walkinType').value=r.type;refreshWalkinRooms();$('walkinRoom').value=roomNo;updateWalkinSummary();}
+   $('walkinGuest').focus();
  },60);
 }
 // Route a reservation to wherever its current status needs attention.
@@ -638,7 +968,7 @@ function openReservationContext(ref){
  if(r.status==='Inspection Completed'||r.status==='Pending Damage Payment')
    return openCheckoutFor(r.room,`${r.guest}: review the inspection and finalise checkout.`);
  if(r.status==='Checked in')return openCheckoutFor(r.room,`Checking out ${r.guest} from Room ${r.room}.`);
- if(['Confirmed','Checked Out'].includes(r.status))return showReceipt(r);
+ if(['Confirmed','Checked Out'].includes(r.status)||!can('checkin'))return showReceipt(r);
  // Pending payment / Needs review both need money handled at the desk.
  openCheckinFor(ref,r.status==='Needs review'?`${r.guest}: review the booking and settle payment.`:`${r.guest} owes ${money(resBal(r))}.`);
 }
@@ -646,7 +976,7 @@ function openReservationContext(ref){
 function openInspectionFor(roomNo,msg){
  go('inspection');
  setTimeout(()=>{
-   if(msg)showToast(msg);
+   if(msg)showToast(msg,'info');
    const room=rooms.find(x=>x.n===roomNo);
    // If the current user can inspect and the room is awaiting inspection, open it straight away.
    if(roomNo&&room&&room.stay&&room.stay.inspStatus==='pending'&&['housekeeper','supervisor'].includes(currentUser.role))
@@ -664,33 +994,13 @@ function openTicketContext(id){
  },60);
 }
 function statusAction(ref){ openReservationContext(ref); }
-function showReceipt(r){
- $('modalTitle').textContent='Reservation Receipt';
- $('modalContent').innerHTML=`<div class="receipt">
-   <div class="receipt-head"><div><strong>${r.ref}</strong><p>${r.source} booking</p></div>${statusBadge(r.status)}</div>
-   <div class="detail-grid">
-     <div class="detail"><span>Guest</span><strong>${esc(r.guest)}</strong><small>${esc(r.contact)}</small></div>
-     <div class="detail"><span>Room</span><strong>${r.room} · ${r.roomType}</strong><small>${ROOM_TYPES[r.roomType].beds}</small></div>
-     <div class="detail"><span>Check-in</span><strong>${fmtDay(r.checkIn)}</strong></div>
-     <div class="detail"><span>Check-out</span><strong>${fmtDay(r.checkOut)}</strong></div>
-     <div class="detail"><span>Guests</span><strong>${r.adults} adult${r.adults>1?'s':''}${r.kids?`, ${r.kids} child${r.kids>1?'ren':''}`:''}</strong></div>
-     <div class="detail"><span>Nights</span><strong>${nights(r.checkIn,r.checkOut)}</strong></div>
-   </div>
-   <div class="bill">
-     <div><span>Total charge</span><strong>${money(r.total)}</strong></div>
-     <div><span>Amount paid</span><strong>${money(r.paid)}</strong></div>
-     <div class="bill-total"><span>Balance</span><strong>${money(resBal(r))}</strong></div>
-   </div>
-   ${resBal(r)>0?`<div class="notice warn">Balance must be settled before check-in.</div>`:`<div class="notice ok">Fully settled.</div>`}
- </div>`;
- openBackdrop('modalBackdrop');
-}
-function viewReservation(ref){showReceipt(reservations.find(r=>r.ref===ref));}
 
 /* ---- New reservation: import online or create manually ---- */
 function openReservationModal(){
- $('modalTitle').textContent='New Reservation';
- $('modalContent').innerHTML=`<div class="tab-row inner-tabs"><button class="tab active" data-restab="online">Online bookings <span class="tab-count">${onlineBookings.length}</span></button><button class="tab" data-restab="manual">Manual reservation</button></div><div id="resTabBody"></div>`;
+ $('modalTitle').textContent='New reservation';
+ $('modalDesc').textContent='Import a booking received from a connected site, or take one at the desk.';
+ $('modalDesc').classList.remove('hidden');
+ $('modalContent').innerHTML=`<div class="tabs" role="tablist" style="margin-top:-6px"><button class="tab active" role="tab" data-restab="online" type="button">${icon('inbox','sm')}Online bookings <span class="tab-count">${onlineBookings.length}</span></button><button class="tab" role="tab" data-restab="manual" type="button">${icon('edit','sm')}Manual reservation</button></div><div id="resTabBody"></div>`;
  openBackdrop('modalBackdrop');
  document.querySelectorAll('[data-restab]').forEach(b=>b.onclick=()=>{
    document.querySelectorAll('[data-restab]').forEach(x=>x.classList.toggle('active',x===b));
@@ -700,28 +1010,22 @@ function openReservationModal(){
 }
 function onlineTab(){
  const body=$('resTabBody');
- if(!onlineBookings.length){body.innerHTML=emptyState('All online bookings have been imported.');return;}
- body.innerHTML=`<p class="res-hint">Bookings received from connected sites. Import automatically, or review the details first.</p>
- <div class="online-list">${onlineBookings.map((b,i)=>`<div class="online-row">
-   <div><span class="source-pill">${b.source}</span><strong>${esc(b.guest)}</strong>
-     <p>${fmtDay(b.checkIn)} – ${fmtDay(b.checkOut)} · ${b.roomType} · ${b.adults}A${b.kids?` ${b.kids}C`:''} · ${money(b.total)}</p>
-     <p class="online-pay">${b.prepaid?'<span class="ok-text">Prepaid online</span>':'<span class="warn-text">Pay at hotel</span>'} · ${b.id}</p></div>
-   <div class="online-actions"><button class="mini-button" data-review="${i}">Review</button><button class="mini-button primary" data-import="${i}">Import</button></div>
- </div>`).join('')}</div>`;
+ if(!onlineBookings.length){body.innerHTML=empty('All online bookings have been imported.','New bookings from connected sites will appear here.',{ok:true});return;}
+ body.innerHTML=`<div class="card flush">${listOf(onlineBookings.map((b,i)=>listItem({lead:initials(b.guest),title:`${esc(b.guest)} <span class="source-pill" style="margin-left:6px">${b.source}</span>`,
+   sub:`${fmtDay(b.checkIn)} – ${fmtDay(b.checkOut)} · ${b.roomType} · ${b.adults}A${b.kids?` ${b.kids}C`:''} · ${money(b.total)} · ${b.id}`,
+   meta:b.prepaid?chip('Prepaid online','success',{dot:true}):chip('Pay at hotel','warning',{dot:true}),
+   actions:`<button class="btn btn-secondary btn-sm" data-review="${i}" type="button">Review</button><button class="btn btn-primary btn-sm" data-import="${i}" type="button">Import</button>`})))}</div>`;
  document.querySelectorAll('[data-import]').forEach(b=>b.onclick=()=>importBooking(+b.dataset.import));
  document.querySelectorAll('[data-review]').forEach(b=>b.onclick=()=>reviewBooking(+b.dataset.review));
 }
 function reviewBooking(i){
  const b=onlineBookings[i];
- $('resTabBody').innerHTML=`<div class="detail-grid">
-   <div class="detail"><span>Guest</span><strong>${esc(b.guest)}</strong><small>${esc(b.contact)}</small></div>
-   <div class="detail"><span>Source</span><strong>${b.source}</strong><small>${b.id}</small></div>
-   <div class="detail"><span>Stay</span><strong>${fmtDay(b.checkIn)} – ${fmtDay(b.checkOut)}</strong><small>${nights(b.checkIn,b.checkOut)} nights</small></div>
-   <div class="detail"><span>Room type</span><strong>${b.roomType}</strong><small>${ROOM_TYPES[b.roomType].beds}</small></div>
-   <div class="detail"><span>Guests</span><strong>${b.adults} adults, ${b.kids} children</strong></div>
-   <div class="detail"><span>Total</span><strong>${money(b.total)}</strong><small>${b.prepaid?'Prepaid':'Collect on arrival'}</small></div>
- </div>
- <div class="task-buttons"><button class="secondary-button" id="backOnline">Back</button><button class="primary-button" id="confirmImport">Confirm and Import</button></div>`;
+ $('resTabBody').innerHTML=`${kv([
+   ['Guest',esc(b.guest),esc(b.contact)],['Source',b.source,b.id],
+   ['Stay',`${fmtDay(b.checkIn)} – ${fmtDay(b.checkOut)}`,plural(nights(b.checkIn,b.checkOut),'night')],['Room type',b.roomType,ROOM_TYPES[b.roomType].beds],
+   ['Guests',guestsText(b.adults,b.kids)],['Total',money(b.total),b.prepaid?'Prepaid':'Collect on arrival']
+ ])}
+ <div class="modal-foot" style="margin:20px -24px -20px"><button class="btn btn-secondary" id="backOnline" type="button">${icon('chevron-left','sm')}Back</button><button class="btn btn-primary" id="confirmImport" type="button">Confirm and import</button></div>`;
  $('backOnline').onclick=onlineTab;
  $('confirmImport').onclick=()=>importBooking(i);
 }
@@ -735,31 +1039,35 @@ function importBooking(i){
  showToast(`${b.guest}'s ${b.source} booking imported.`);
 }
 function manualTab(){
- $('resTabBody').innerHTML=`<form class="form-grid" id="manualResForm">
-   <label>Guest name<input id="mrGuest" required placeholder="Full name"></label>
-   <label>Contact number<input id="mrContact" required placeholder="09XX XXX XXXX"></label>
-   <label>Check-in<input type="date" id="mrIn" value="${T}"></label>
-   <label>Check-out<input type="date" id="mrOut" value="${isoDate(dayOff(1))}"></label>
-   <label>Room type<select id="mrType"><option value="Standard">Standard · 2 single beds · ₱1,800</option><option value="Family">Family · 4 single beds · ₱2,600</option></select></label>
+ $('resTabBody').innerHTML=`<form class="form-grid" id="manualResForm" novalidate>
+   <label>Guest name <span class="sr-only">(required)</span><input id="mrGuest" required placeholder="Full name" autocomplete="off"></label>
+   <label>Contact number <span class="sr-only">(required)</span><input id="mrContact" required placeholder="09XX XXX XXXX" inputmode="tel" autocomplete="off"></label>
+   <label>Check-in<input type="date" id="mrIn" value="${T}" min="${T}"></label>
+   <label>Check-out<input type="date" id="mrOut" value="${isoDate(dayOff(1))}" min="${isoDate(dayOff(1))}"></label>
+   <label class="full">Room type<select id="mrType"><option value="Standard">Standard · 2 single beds · ₱1,800 / night</option><option value="Family">Family · 4 single beds · ₱2,600 / night</option></select></label>
    <label>Adults<input type="number" id="mrAdults" min="1" value="2"></label>
    <label>Children<input type="number" id="mrKids" min="0" value="0"></label>
    <label>Payment method<select id="mrMethod"><option>Cash</option><option>Card</option><option>GCash</option><option>Maya</option></select></label>
-   <label>Amount received<input type="number" id="mrPaid" min="0" step="50" value="0"></label>
-   <div class="full bill" id="mrBill"></div>
-   <button class="primary-button full" type="submit">Confirm Reservation</button>
+   <label>Amount received <span class="field-hint">At least the ${money(DEPOSIT)} deposit</span><input type="number" id="mrPaid" min="0" step="50" value="0" inputmode="decimal"></label>
+   <div class="full" id="mrBill"></div>
+   <div class="full modal-foot" style="margin:4px -24px -20px"><button class="btn btn-secondary" type="button" data-close="modalBackdrop">Cancel</button><button class="btn btn-primary" type="submit" id="mrSubmit">Confirm reservation</button></div>
  </form>`;
+ $('resTabBody').querySelector('[data-close]').onclick=()=>closeBackdrop('modalBackdrop');
  const calc=()=>{
    const type=$('mrType').value,n=nights($('mrIn').value,$('mrOut').value);
    const total=ROOM_TYPES[type].rate*n,paid=+$('mrPaid').value||0;
-   $('mrBill').innerHTML=`<div><span>${type} · ${money(ROOM_TYPES[type].rate)} × ${n} night${n>1?'s':''}</span><strong>${money(total)}</strong></div><div><span>Deposit required</span><strong>${money(DEPOSIT)}</strong></div><div class="bill-total"><span>Balance after payment</span><strong>${money(Math.max(0,total-paid))}</strong></div>`;
+   const enough=paid>=DEPOSIT;
+   $('mrBill').innerHTML=`<div class="deposit"><div class="deposit-head">${icon('file','sm')}Booking summary</div>${rows([[`${type} · ${money(ROOM_TYPES[type].rate)} × ${plural(n,'night')}`,money(total)],['Deposit required to confirm',money(DEPOSIT)],['Amount received',money(paid)]])}<div class="deposit-outcome ${paid>=total?'refund':enough?'zero':'owed'}"><span>${paid>=total?'Fully paid — status Confirmed':enough?'Balance after payment — status Pending payment':`Collect ${money(DEPOSIT-paid)} more to confirm`}</span><strong>${money(Math.max(0,total-paid))}</strong></div></div>`;
+   $('mrSubmit').disabled=!enough;
    return {total,paid};
  };
  ['mrType','mrIn','mrOut','mrPaid'].forEach(id=>$(id).oninput=$(id).onchange=calc);
  calc();
  $('manualResForm').onsubmit=e=>{
    e.preventDefault();
+   if(!validateRequired(e.target))return;
    const {total,paid}=calc();
-   if(paid<DEPOSIT){showToast(`Collect at least the ${money(DEPOSIT)} deposit before confirming.`);return;}
+   if(paid<DEPOSIT){warn(`Collect at least the ${money(DEPOSIT)} deposit before confirming.`);return;}
    const ref=`SSR-2026-${730+reservations.length}`;
    reservations.unshift({ref,guest:$('mrGuest').value,contact:$('mrContact').value,source:'Front Desk',checkIn:$('mrIn').value,checkOut:$('mrOut').value,roomType:$('mrType').value,room:'—',adults:+$('mrAdults').value,kids:+$('mrKids').value,total,paid,status:paid>=total?'Confirmed':'Pending payment'});
    transactions.unshift({when:nowISO(),ref,guest:$('mrGuest').value,room:'—',type:paid>=total?'Reservation payment':'Deposit',method:$('mrMethod').value,amount:paid,staff:currentUser.name});
@@ -771,22 +1079,99 @@ function manualTab(){
 /* ============================================================
    ROOMS
    ============================================================ */
+// Contextual flags derived from live stay / task / work-order data.
+function roomFlags(r){
+ const f=[];const money_ok=isRole('frontdesk','manager');
+ if(r.stay){
+   if(r.stay.checkOut===T)f.push(chip('Due out','warning'));
+   if(r.stay.inspStatus==='pending')f.push(chip('Inspecting','warning',{dot:true}));
+   if(r.stay.inspStatus==='done')f.push(chip('Inspected','info',{dot:true}));
+   if(money_ok&&roomBal(r)>0)f.push(chip(`${money(roomBal(r))} due`,'neutral'));
+ }else{
+   const t=openTaskFor(r.n);
+   if(t)f.push(t.status==='Ready for Inspection'?chip('Ready for inspection','info',{dot:true}):t.status==='In Progress'?chip('Cleaning now','warning',{dot:true}):chip(t.staff==='Unassigned'?'Unassigned':'To clean','neutral'));
+   const k=openTicketFor(r.n);
+   if(k&&r.status==='maintenance')f.push(chip(k.status,'danger'));
+ }
+ return f.join('');
+}
 function renderRooms(){
  const f=$('floorFilter').value,s=$('statusFilter').value;
- $('roomStats').innerHTML=statCards([
-   ['Available',roomCount('available'),'ready for guests'],
-   ['Occupied',roomCount('occupied'),`${occupancyRate()}% occupancy`],
-   ['Cleaning',roomCount('cleaning'),'with housekeeping'],
-   ['Maintenance',roomCount('maintenance'),'temporarily offline']
+ const q=($('roomSearch').value||'').trim().toLowerCase();
+ const awaitingInsp=readyForInspection().length+roomsPendingInspection().length;
+ $('roomStats').innerHTML=statStrip([
+   {label:'Occupancy',value:occupancyRate()+'%',sub:`${roomCount('occupied')} of ${rooms.length} rooms`},
+   {label:'Available now',value:roomCount('available'),sub:`${rooms.filter(r=>r.status==='available'&&r.type==='Standard').length} Standard · ${rooms.filter(r=>r.status==='available'&&r.type==='Family').length} Family`},
+   {label:'Due out today',value:departuresToday().length,sub:'checking out'},
+   {label:'Awaiting inspection',value:awaitingInsp,sub:`${roomsPendingInspection().length} checkout · ${readyForInspection().length} cleaning`,attn:awaitingInsp>0},
+   {label:'Offline',value:roomCount('maintenance'),sub:'held by maintenance',attn:roomCount('maintenance')>0}
  ]);
- const list=rooms.filter(r=>(f==='all'||r.floor===f)&&(s==='all'||r.status===s));
- $('roomGrid').innerHTML=list.map(r=>`<article class="room-card ${r.status}">
-   <div class="rc-head"><strong>Room ${r.n}</strong><span class="badge ${r.status==='available'?'low':r.status==='occupied'?'info':r.status==='cleaning'?'medium':'high'}">${r.status}</span></div>
-   <span class="rc-type">${r.type}</span><div class="room-meta">${r.beds} · sleeps ${ROOM_TYPES[r.type].cap}</div>
-   ${r.stay?`<div class="rc-guest"><strong>${esc(r.stay.guest)}</strong><small>out ${fmtDay(r.stay.checkOut)}${roomBal(r)>0?` · ${money(roomBal(r))} due`:''}</small></div>`:`<div class="rc-guest muted-text">${r.status==='available'?`${money(r.rate)} / night`:r.status==='cleaning'?'Being prepared':'Held by maintenance'}</div>`}
-   ${currentUser.role==='frontdesk'&&r.status==='occupied'?`<select class="room-transfer-select" data-transfer="${r.n}"><option value="">Transfer guest…</option>${rooms.filter(x=>x.status==='available').map(x=>`<option value="${x.n}">Room ${x.n} · ${x.type}</option>`).join('')}</select>`:''}
- </article>`).join('')||emptyState('No rooms match these filters.');
- document.querySelectorAll('[data-transfer]').forEach(s=>s.onchange=()=>transferGuest(s.dataset.transfer,s.value));
+ $('roomStatusSeg').innerHTML=segmented('statusFilter',[
+   {value:'all',label:'All',count:rooms.length},
+   ...['available','occupied','cleaning','maintenance'].map(k=>({value:k,label:ROOM_LABEL[k],count:roomCount(k),dot:'bg-'+k}))
+ ],s,'rooms');
+ const match=r=>(f==='all'||r.floor===f)&&(s==='all'||r.status===s)&&(!q||r.n.includes(q)||(r.stay&&r.stay.guest.toLowerCase().includes(q)));
+ const floors=[...new Set(rooms.map(r=>r.floor))];
+ const html=floors.map(fl=>{
+   const inFloor=rooms.filter(r=>r.floor===fl);
+   const shown=inFloor.filter(match);
+   if(!shown.length)return '';
+   return `<section class="floor"><div class="floor-head"><h2>Floor ${fl}</h2><span>${plural(inFloor.length,'room')} · ${inFloor.filter(r=>r.status==='available').length} available</span></div>
+   <div class="room-grid">${shown.map(r=>`<button type="button" class="room-tile ${r.status}" data-open-room="${r.n}" aria-label="Room ${r.n}, ${r.type}, ${ROOM_LABEL[r.status]}${r.stay?`, guest ${esc(r.stay.guest)}`:''}">
+     <div class="rt-top"><span class="rt-num">${r.n}</span>${roomChip(r.status)}</div>
+     <span class="rt-type">${r.type} · sleeps ${ROOM_TYPES[r.type].cap}</span>
+     ${r.stay?`<span class="rt-guest">${esc(r.stay.guest)}</span><span class="rt-type">Out ${fmtDay(r.stay.checkOut)}</span>`:`<span class="rt-note">${r.status==='available'?`${money(r.rate)} / night`:r.status==='cleaning'?'Being prepared':'Held by maintenance'}</span>`}
+     <div class="rt-flags">${roomFlags(r)}</div>
+   </button>`).join('')}</div></section>`;
+ }).join('');
+ $('roomGrid').innerHTML=html||`<div class="card">${empty('No rooms match these filters.','Clear the search or choose another status.',{icon:'search'})}</div>`;
+ bindAll($('rooms'));
+}
+function openRoomDrawer(n){
+ const r=rooms.find(x=>x.n===n);if(!r)return;
+ const s=r.stay,role=currentUser.role;
+ const task=openTaskFor(n),tk=openTicketFor(n);
+ const inspTask=tasks.find(t=>t.room===n&&t.kind==='inspection'&&t.status!=='Completed');
+ let body='';
+ if(s){
+   body+=`<section class="drawer-section"><h3>${icon('user','sm')}Current stay</h3>${kv([
+     ['Guest',esc(s.guest),s.ref],['Guests',guestsText(s.adults,s.kids)],
+     ['Checked in',fmtDay(s.checkIn)],['Checking out',fmtDay(s.checkOut),plural(nights(s.checkIn,s.checkOut),'night')],
+     isRole('frontdesk','manager')&&['Room balance',`<span class="${roomBal(r)>0?'warn-text':'ok-text'}">${money(roomBal(r))}</span>`],
+     isRole('frontdesk','manager')&&['Security deposit',money(s.deposit||0)],
+     ['Checkout inspection',s.inspStatus==='pending'?'In progress':s.inspStatus==='done'?'Completed':'Not started','','full']
+   ])}</section>`;
+   if(role==='frontdesk'){
+     const avail=rooms.filter(x=>x.status==='available');
+     body+=`<section class="drawer-section"><h3>${icon('swap','sm')}Transfer guest</h3>
+       ${avail.length?`<div class="input-group"><select id="transferTarget" aria-label="Transfer to room"><option value="">Choose an available room…</option>${avail.map(x=>`<option value="${x.n}">Room ${x.n} · ${x.type}</option>`).join('')}</select><button class="btn btn-secondary" type="button" data-transfer-from="${n}">Transfer</button></div><p class="field-hint mt-4">The guest's folio moves with them and Room ${n} is queued for turnover cleaning.</p>`:'<p class="text-3">No rooms are available for a transfer.</p>'}</section>`;
+   }
+ }else{
+   body+=`<section class="drawer-section"><h3>${icon('bed','sm')}Room</h3>${kv([['Type',r.type,r.beds],['Sleeps',ROOM_TYPES[r.type].cap],['Rate',`${money(r.rate)} / night`],['Floor',r.floor]])}</section>`;
+ }
+ if(task)body+=`<section class="drawer-section"><h3>${icon('sparkle','sm')}Housekeeping</h3>${rows([['Task',esc(task.type)],['Housekeeper',esc(task.staff)],['Status',taskChip(task.status)],['Priority',prioTag(task.priority)]])}${task.inspection?`<div class="task-feedback ${task.inspection.result==='Approved'?'ok':'warn'} mt-4">${esc(task.inspection.result)} by ${esc(task.inspection.by)}${task.inspection.note?` — ${esc(task.inspection.note)}`:''}</div>`:''}</section>`;
+ if(tk)body+=`<section class="drawer-section"><h3>${icon('tool','sm')}Maintenance</h3>${rows([['Issue',esc(tk.issue)],['Status',chip(tk.status,ticketTone(tk))],['Priority',prioTag(tk.priority)],['Technician',esc(tk.assignedTo)||'Not assigned'],tk.eta&&['ETA',fmtDT(tk.eta)]])}</section>`;
+ const foot=[];
+ if(role==='frontdesk'){
+   if(s&&s.inspStatus!=='pending')foot.push(`<button class="btn btn-primary" data-checkout-room="${n}" type="button">${icon('door-out','sm')}${s.inspStatus==='done'?'Finish checkout':'Check out'}</button>`);
+   if(r.status==='available')foot.push(`<button class="btn btn-primary" data-walkin-room="${n}" type="button">${icon('user-plus','sm')}Register walk-in here</button>`);
+ }
+ if(s&&s.inspStatus==='pending'&&isRole('housekeeper','supervisor'))foot.push(`<button class="btn btn-primary" data-inspect-room="${n}" type="button">${icon('clipboard','sm')}Start inspection</button>`);
+ if(role==='supervisor'&&task&&task.status==='Ready for Inspection')foot.push(`<button class="btn btn-primary" data-inspect="${task.id}" type="button">Inspect cleaning</button>`);
+ if(role==='supervisor'&&!s&&!task&&!inspTask&&['cleaning','available'].includes(r.status))foot.push(`<button class="btn btn-secondary" data-assign-room="${n}" type="button">${icon('plus','sm')}Assign task</button>`);
+ if(role==='supervisor'&&task&&task.status!=='Completed')foot.push(`<button class="btn btn-secondary" data-reassign="${task.id}" type="button">${task.staff==='Unassigned'?'Assign housekeeper':'Reassign'}</button>`);
+ if(role==='housekeeper'&&task&&task.staff===currentUser.name&&['Assigned','In Progress'].includes(task.status))foot.push(`<button class="btn btn-primary" data-task-advance="${task.id}" type="button">${task.status==='Assigned'?'Start cleaning':'Submit for inspection'}</button>`);
+ if(role==='housekeeper')foot.push(`<button class="btn btn-secondary" data-report-room="${n}" type="button">${icon('flag','sm')}Report issue</button>`);
+ if(tk&&can('maintenance'))foot.push(`<button class="btn btn-secondary" data-open-ticket="${tk.id}" type="button">View work order</button>`);
+ openDrawer({eyebrow:`Floor ${r.floor} · ${r.type}`,title:`Room ${n}`,meta:roomChip(r.status)+roomFlags(r),body,foot:foot.join('')});
+}
+async function transferFromDrawer(from){
+ const to=$('transferTarget').value;
+ if(!to){warn('Choose the room to transfer the guest to.');$('transferTarget').focus();return;}
+ const a=rooms.find(r=>r.n===from);
+ const ok=await confirmDialog({title:`Transfer ${a.stay.guest}?`,body:`<p>Move the guest from <strong>Room ${from}</strong> to <strong>Room ${to}</strong>. Room ${from} will be marked for turnover cleaning.</p>`,confirmLabel:'Transfer guest'});
+ if(!ok)return;
+ closeDrawer();transferGuest(from,to);
 }
 function transferGuest(from,to){
  if(!to)return;
@@ -802,57 +1187,156 @@ function transferGuest(from,to){
 }
 
 /* ============================================================
-   GUEST TRANSACTIONS
+   FRONT DESK — guided check-in · walk-in · check-out
    ============================================================ */
+let lastCheckinRef=null,lastCheckoutRoom=null;
+const CHECKIN_ELIGIBLE=['Confirmed','Pending payment','Needs review'];
 function refreshTransactionForms(){
- const eligible=reservations.filter(r=>['Confirmed','Pending payment','Needs review'].includes(r.status));
- $('checkinReservation').innerHTML=eligible.map(r=>`<option value="${r.ref}">${r.ref} · ${r.guest} · ${fmtDay(r.checkIn)}</option>`).join('')||'<option value="">No reservations awaiting check-in</option>';
+ const eligible=reservations.filter(r=>CHECKIN_ELIGIBLE.includes(r.status));
+ const prevRes=$('checkinReservation').value;
+ $('checkinReservation').innerHTML=eligible.map(r=>`<option value="${r.ref}">${r.ref} · ${r.guest} · ${fmdSafe(r.checkIn)}</option>`).join('')||'<option value="">No reservations awaiting check-in</option>';
+ if(eligible.some(r=>r.ref===prevRes))$('checkinReservation').value=prevRes;
  const avail=rooms.filter(r=>r.status==='available');
+ const prevRoom=$('checkinRoom').value;
  $('checkinRoom').innerHTML=avail.map(r=>`<option value="${r.n}">Room ${r.n} · ${r.type} · ${r.beds}</option>`).join('')||'<option value="">No rooms available</option>';
+ if(avail.some(r=>r.n===prevRoom))$('checkinRoom').value=prevRoom;
  refreshWalkinRooms();
- $('checkoutGuest').innerHTML=rooms.filter(r=>r.stay).map(r=>{const s=r.stay.inspStatus;const tag=s==='pending'?' · inspecting':s==='done'?' · inspected':'';return `<option value="${r.n}">Room ${r.n} · ${r.stay.guest}${tag}</option>`;}).join('')||'<option value="">No in-house guests</option>';
+ const inHouse=rooms.filter(r=>r.stay);
+ const prevOut=$('checkoutGuest').value;
+ $('checkoutGuest').innerHTML=inHouse.map(r=>{const s=r.stay.inspStatus;const tag=s==='pending'?' · inspecting':s==='done'?' · inspected':'';return `<option value="${r.n}">Room ${r.n} · ${r.stay.guest}${tag}</option>`;}).join('')||'<option value="">No in-house guests</option>';
+ if(inHouse.some(r=>r.n===prevOut))$('checkoutGuest').value=prevOut;
+ // A newly selected reservation picks up its guest count and best room.
+ if($('checkinReservation').value!==lastCheckinRef)applyCheckinReservation();
+ $('countCheckin').textContent=arrivalsToday().length||'';
+ $('countCheckout').textContent=inHouse.filter(r=>r.stay.checkOut===T||r.stay.inspStatus!=='none').length||'';
+ renderCheckinQueue();renderCheckoutQueue();
  updateCheckinSummary();updateWalkinSummary();updateCheckoutSummary();
+}
+const fmdSafe=s=>s?fmtDay(s):'';
+function renderCheckinQueue(){
+ const q=($('checkinQueueSearch').value||'').trim().toLowerCase();
+ const sel=$('checkinReservation').value;
+ const eligible=reservations.filter(r=>CHECKIN_ELIGIBLE.includes(r.status)&&(!q||`${r.guest} ${r.ref} ${r.room}`.toLowerCase().includes(q)));
+ const groups=[['Arriving today',eligible.filter(r=>r.checkIn<=T)],['Upcoming',eligible.filter(r=>r.checkIn>T)]];
+ $('checkinQueue').innerHTML=eligible.length?groups.filter(g=>g[1].length).map(([label,items])=>`<p class="queue-group">${label} · ${items.length}</p>`+items.map(r=>`<button type="button" class="queue-item${r.ref===sel?' active':''}" data-pick-checkin="${r.ref}" aria-pressed="${r.ref===sel}">
+   <span class="li-lead">${r.room&&r.room!=='—'?r.room:initials(r.guest)}</span>
+   <span class="qi-main"><span class="qi-title">${esc(r.guest)}</span><span class="qi-sub">${r.ref} · ${fmtDay(r.checkIn)} · ${r.roomType}</span></span>
+   ${resBal(r)>0?chip(money(resBal(r)),'warning',{sm:true}):chip('Paid','success',{sm:true})}
+ </button>`).join('')).join(''):empty(q?'No matches.':'No reservations awaiting check-in.',q?'Try another name or reference.':'Imported and manual bookings appear here.',{compact:true,ok:!q});
+ bindAll($('checkinQueue'));
+}
+function checkoutStage(r){const s=r.stay.inspStatus;return s==='done'?(depositMath(r.stay).extra>0?['Damage payment','danger']:['Ready to finish','info']):s==='pending'?['Inspecting','warning']:r.stay.checkOut===T?['Due out','neutral']:['In house','neutral'];}
+function renderCheckoutQueue(){
+ const q=($('checkoutQueueSearch').value||'').trim().toLowerCase();
+ const sel=$('checkoutGuest').value;
+ const inHouse=rooms.filter(r=>r.stay&&(!q||`${r.n} ${r.stay.guest}`.toLowerCase().includes(q)));
+ const groups=[
+   ['Ready to finish',inHouse.filter(r=>r.stay.inspStatus==='done')],
+   ['Being inspected',inHouse.filter(r=>r.stay.inspStatus==='pending')],
+   ['Due out today',inHouse.filter(r=>r.stay.inspStatus==='none'&&r.stay.checkOut===T)],
+   ['Other in-house guests',inHouse.filter(r=>r.stay.inspStatus==='none'&&r.stay.checkOut!==T)]
+ ];
+ $('checkoutQueue').innerHTML=inHouse.length?groups.filter(g=>g[1].length).map(([label,items])=>`<p class="queue-group">${label} · ${items.length}</p>`+items.map(r=>{const [st,tone]=checkoutStage(r);return `<button type="button" class="queue-item${r.n===sel?' active':''}" data-pick-checkout="${r.n}" aria-pressed="${r.n===sel}">
+   <span class="li-lead">${r.n}</span>
+   <span class="qi-main"><span class="qi-title">${esc(r.stay.guest)}</span><span class="qi-sub">Out ${fmtDay(r.stay.checkOut)} · ${r.type}</span></span>
+   ${chip(st,tone,{sm:true})}
+ </button>`;}).join('')).join(''):empty(q?'No matches.':'No in-house guests.','',{compact:true});
+ bindAll($('checkoutQueue'));
+}
+function selectCheckinReservation(ref){
+ $('checkinReservation').value=ref;$('checkinPaid').value=0;
+ applyCheckinReservation();renderCheckinQueue();updateCheckinSummary();
+}
+function selectCheckoutRoom(n){
+ $('checkoutGuest').value=n;$('checkoutPaid').value=0;
+ renderCheckoutQueue();updateCheckoutSummary();
+}
+// When the reservation changes: carry over guest counts and preselect the
+// reserved room (or the first available room of the booked type).
+function applyCheckinReservation(){
+ const r=currentRes();lastCheckinRef=$('checkinReservation').value;
+ if(!r)return;
+ $('checkinAdults').value=r.adults;$('checkinKids').value=r.kids;
+ const sel=$('checkinRoom'),opts=[...sel.options].map(o=>o.value);
+ const reserved=opts.includes(r.room)?r.room:null;
+ const sameType=rooms.find(x=>x.status==='available'&&x.type===r.roomType);
+ if(reserved)sel.value=reserved;else if(sameType)sel.value=sameType.n;
+}
+function currentRes(){return reservations.find(r=>r.ref===$('checkinReservation').value);}
+function guestHead(name,subs,chips){
+ return `<div class="guest-head"><span class="guest-avatar">${initials(name)}</span><div class="gh-main"><h2>${esc(name)}</h2><div class="gh-sub">${subs.filter(Boolean).map(s=>`<span>${s}</span>`).join('')}</div></div><div>${chips||''}</div></div>`;
+}
+function setPayBox(boxId,amountId,amount,o={}){
+ const box=$(boxId);
+ box.className=`pay-summary mt-4 ${o.tone||(amount>0?'due':'settled')}`;
+ $(amountId).textContent=money(amount);
+ $(amountId).className='';
+}
+function updateCheckinSummary(){
+ const r=currentRes(),box=$('checkinSummary'),btn=$('checkinSubmitBtn');
+ const form=$('checkinForm');
+ if(!r){
+   box.innerHTML=empty('No reservation selected.','Choose a guest from the list on the left.',{icon:'door-in'});
+   form.style.display='none';return;
+ }
+ form.style.display='';
+ const due=resBal(r),paid=+$('checkinPaid').value||0;
+ const left=Math.max(0,due-paid);
+ const room=rooms.find(x=>x.n===$('checkinRoom').value);
+ box.innerHTML=guestHead(r.guest,[`${icon('tag','xs')}<span class="ref">${r.ref}</span>`,`<span class="source-pill">${r.source}</span>`,`${icon('phone','xs')}${esc(r.contact)}`],statusBadge(r.status))
+   +`<div class="facts">
+     <div class="fact"><span>Stay</span><strong>${fmtDay(r.checkIn)} – ${fmtDay(r.checkOut)}</strong></div>
+     <div class="fact"><span>Booked</span><strong>${r.roomType} · ${plural(nights(r.checkIn,r.checkOut),'night')}</strong></div>
+     <div class="fact"><span>Total · paid</span><strong>${money(r.total)} · ${money(r.paid)}</strong></div>
+     <div class="fact ${due>0?'due':'ok'}"><span>Balance due</span><strong>${money(due)}</strong></div>
+   </div>`
+   +(r.status==='Needs review'?`<div style="padding:0 20px 16px"><div class="callout warning">${icon('alert-circle','sm')}<span><strong>Needs review.</strong> Confirm the booking details with the guest before taking payment.</span></div></div>`:'')
+   +(r.checkIn>T?`<div style="padding:0 20px 16px"><div class="callout info">${icon('info','sm')}<span>This booking arrives on <strong>${fmtDay(r.checkIn)}</strong>.</span></div></div>`:'');
+ setPayBox('checkinPayBox','checkinBalance',left);
+ $('checkinFill').disabled=due<=0;
+ $('checkinFill').textContent=due>0?`Full balance ${money(due)}`:'No balance';
+ // Room hint: type and capacity checks are advisory only.
+ const hint=[];
+ if(!room)hint.push('<span class="warn-text">No rooms are available — approve a cleaned room first.</span>');
+ else{
+   if(room.type!==r.roomType)hint.push(`<span class="warn-text">Booked ${r.roomType}; Room ${room.n} is ${room.type}.</span>`);
+   else if(r.room===room.n)hint.push(`Room ${room.n} was reserved for this booking.`);
+   const ppl=(+$('checkinAdults').value||0)+(+$('checkinKids').value||0);
+   if(ppl>ROOM_TYPES[room.type].cap)hint.push(`<span class="warn-text">${ppl} guests exceed this room's capacity of ${ROOM_TYPES[room.type].cap}.</span>`);
+ }
+ $('checkinRoomHint').innerHTML=hint.join(' ');
+ if(!room){btn.disabled=true;btn.textContent='No room available';}
+ else if(left>0){btn.disabled=true;btn.textContent=`Collect ${money(left)} more to check in`;}
+ else{btn.disabled=false;btn.textContent=paid>0?`Confirm ${money(paid)} payment & check in`:`Check in to Room ${room.n}`;}
+ $('checkinFootNote').innerHTML=room?`${icon('info','sm')}Room ${room.n} will be marked Occupied.`:'';
 }
 function refreshWalkinRooms(){
  const type=$('walkinType').value;
+ const prev=$('walkinRoom').value;
  const avail=rooms.filter(r=>r.status==='available'&&r.type===type);
  $('walkinRoom').innerHTML=avail.map(r=>`<option value="${r.n}">Room ${r.n} · ${r.beds}</option>`).join('')||`<option value="">No ${type} rooms available</option>`;
-}
-function currentRes(){return reservations.find(r=>r.ref===$('checkinReservation').value);}
-function updateCheckinSummary(){
- const r=currentRes(),box=$('checkinSummary');
- if(!r){box.innerHTML=emptyState('No reservation selected.');$('checkinBalance').textContent=money(0);return;}
- $('checkinAdults').value=r.adults;$('checkinKids').value=r.kids;
- const due=resBal(r),paid=+$('checkinPaid').value||0;
- $('checkinBalance').textContent=money(Math.max(0,due-paid));
- $('checkinBalance').className=due-paid>0?'warn-text':'ok-text';
- box.innerHTML=`<div class="summary-room"><strong>${esc(r.guest)}</strong><span>${r.ref} · ${r.source}</span></div>
- <dl><div><dt>Stay</dt><dd>${fmtDay(r.checkIn)} – ${fmtDay(r.checkOut)}</dd></div>
- <div><dt>Nights</dt><dd>${nights(r.checkIn,r.checkOut)}</dd></div>
- <div><dt>Room type</dt><dd>${r.roomType}</dd></div>
- <div><dt>Total charge</dt><dd>${money(r.total)}</dd></div>
- <div><dt>Already paid</dt><dd>${money(r.paid)}</dd></div>
- <div><dt>Balance due</dt><dd><strong>${money(due)}</strong></dd></div></dl>
- <div class="notice ${due>0?'warn':'ok'}">${due>0?`Collect ${money(due)} before completing check-in.`:'Fully settled — ready to check in.'}</div>`;
+ if(avail.some(r=>r.n===prev))$('walkinRoom').value=prev;
 }
 function updateWalkinSummary(){
  const r=rooms.find(x=>x.n===$('walkinRoom').value);
  const n=+$('walkinNights').value||1;
- const box=$('walkinRoomSummary');
- if(!r){box.innerHTML=emptyState('No room of this type is available.');$('walkinBalance').textContent=money(0);return;}
+ const box=$('walkinRoomSummary'),btn=$('walkinSubmitBtn');
+ if(!r){box.innerHTML=empty(`No ${$('walkinType').value} room is available.`,'Try the other room type, or wait for a room to pass inspection.',{icon:'bed'});setPayBox('walkinPayBox','walkinBalance',0,{tone:''});btn.disabled=true;btn.textContent='No room available';$('walkinFill').disabled=true;$('walkinFootNote').innerHTML='';return;}
  const total=r.rate*n+DEPOSIT,paid=+$('walkinPaid').value||0;
- $('walkinBalance').textContent=money(Math.max(0,total-paid));
- $('walkinBalance').className=total-paid>0?'warn-text':'ok-text';
- box.innerHTML=`<div class="summary-room"><strong>Room ${r.n}</strong><span>${r.type} · ${r.beds}</span></div>
- <dl><div><dt>Maximum guests</dt><dd>${ROOM_TYPES[r.type].cap}</dd></div>
- <div><dt>Rate</dt><dd>${money(r.rate)} / night</dd></div>
- <div><dt>Nights</dt><dd>${n}</dd></div>
- <div><dt>Room charge</dt><dd>${money(r.rate*n)}</dd></div>
- <div><dt>Deposit</dt><dd>${money(DEPOSIT)}</dd></div>
- <div><dt>Total due</dt><dd><strong>${money(total)}</strong></dd></div></dl>`;
+ const left=Math.max(0,total-paid);
+ setPayBox('walkinPayBox','walkinBalance',left);
+ $('walkinFill').disabled=false;$('walkinFill').textContent=`Full amount ${money(total)}`;
+ const ppl=(+$('walkinAdults').value||0)+(+$('walkinKids').value||0);
+ box.innerHTML=`<div class="guest-head" style="padding:0 0 16px"><span class="li-lead" style="width:48px;height:48px;font-size:var(--fs-md)">${r.n}</span><div class="gh-main"><h2>Room ${r.n}</h2><div class="gh-sub"><span>${r.type} · ${r.beds}</span><span>Sleeps ${ROOM_TYPES[r.type].cap}</span></div></div>${roomChip(r.status)}</div>
+ ${rows([[`Rate × nights`,`${money(r.rate)} × ${n}`],['Room charge',money(r.rate*n)],['Security deposit <small class="cell-sub">Refunded after the checkout inspection</small>',money(DEPOSIT)],['Total due now',money(total),'total']])}
+ ${ppl>ROOM_TYPES[r.type].cap?`<div class="callout warning mt-4">${icon('alert-circle','sm')}<span>${ppl} guests exceed this room's capacity of ${ROOM_TYPES[r.type].cap}.</span></div>`:''}`;
+ if(left>0){btn.disabled=true;btn.textContent=`Collect ${money(left)} more to register`;}
+ else{btn.disabled=false;btn.textContent=`Confirm payment & register`;}
+ $('walkinFootNote').innerHTML=`${icon('info','sm')}Guest goes straight into Room ${r.n}.`;
 }
 // Deductions from a stay's incidents (missing items scale by qty).
-const stayDeductions=s=>(s.incidents||[]).reduce((a,i)=>a+incidentCost(i),0);
+// Waived incidents no longer count against the deposit (v12 fix).
+const stayDeductions=s=>(s.incidents||[]).filter(i=>i.status!=='Waived').reduce((a,i)=>a+incidentCost(i),0);
 // Security-deposit settlement math for a completed inspection.
 function depositMath(s){
  const deposit=s.deposit||0, damages=stayDeductions(s);
@@ -861,105 +1345,148 @@ function depositMath(s){
  const extra=Math.max(0,damages-deposit);        // guest still owes
  return {deposit,damages,applied,refund,extra};
 }
+function depositBlock(m,title='Security deposit settlement'){
+ const outcome=m.extra>0?`<div class="deposit-outcome owed"><span>Additional amount due from guest</span><strong>${money(m.extra)}</strong></div>`:m.refund>0?`<div class="deposit-outcome refund"><span>Deposit to refund</span><strong>${money(m.refund)}</strong></div>`:`<div class="deposit-outcome zero"><span>Deposit fully applied — nothing to refund</span><strong>${money(0)}</strong></div>`;
+ return `<div class="deposit"><div class="deposit-head">${icon('shield','sm')}${title}</div>${rows([['Security deposit',money(m.deposit)],['Total damages / deductions',money(m.damages)],['Deducted from deposit',`− ${money(m.applied)}`]])}${outcome}</div>`;
+}
+function stepper(steps){return steps.map((s,i)=>`<li class="step ${s.state}" ${s.state==='current'||s.state==='waiting'?'aria-current="step"':''}><span class="step-dot">${s.state==='done'?icon('check'):i+1}</span>${s.label}</li>`).join('');}
 function updateCheckoutSummary(){
  const r=rooms.find(x=>x.n===$('checkoutGuest').value);
  const box=$('guestActivitySummary'),stageBox=$('checkoutStageBox'),btn=$('checkoutSubmitBtn');
- if(!r||!r.stay){box.innerHTML=emptyState('No in-house guest selected.');stageBox.innerHTML='';$('checkoutBalance').textContent=money(0);btn.disabled=false;btn.textContent='Start Room Inspection';return;}
+ const show=(id,on)=>{$(id).style.display=on?'':'none';};
+ if(!r||!r.stay){
+   $('checkoutHeader').innerHTML=`<div class="card-body">${empty('No guest selected.','Choose an in-house guest from the list on the left.',{icon:'door-out'})}</div>`;
+   $('checkoutStepper').innerHTML='';stageBox.innerHTML='';box.innerHTML=empty('No folio to show.','',{compact:true});
+   show('checkoutStepper',false);show('checkoutStageBox',false);show('checkoutPaySection',false);
+   $('checkoutBalance').textContent=money(0);btn.disabled=true;btn.textContent='Start room inspection';$('checkoutFootNote').innerHTML='';return;
+ }
+ show('checkoutStepper',true);show('checkoutStageBox',true);show('checkoutPaySection',true);
+ lastCheckoutRoom=r.n;
  const s=r.stay,roomBalance=roomBal(r),paidIn=+$('checkoutPaid').value||0;
  const reqs=guestRequests.filter(x=>x.room===r.n);
- $('checkoutSideTitle').textContent='Guest Folio';
- box.innerHTML=`<div class="summary-room"><strong>${esc(s.guest)}</strong><span>Room ${r.n} · ${r.type}</span></div>
- <dl><div><dt>Checked in</dt><dd>${fmtDay(s.checkIn)}</dd></div>
- <div><dt>Checking out</dt><dd>${fmtDay(s.checkOut)}</dd></div>
- <div><dt>Nights</dt><dd>${nights(s.checkIn,s.checkOut)}</dd></div>
- <div><dt>Guests</dt><dd>${s.adults} adult${s.adults>1?'s':''}${s.kids?`, ${s.kids} child${s.kids>1?'ren':''}`:''}</dd></div>
- <div><dt>Guest requests</dt><dd>${reqs.length?reqs.flatMap(x=>x.items.map(i=>`${i.name} ×${i.qty}`)).join(', '):'None'}</dd></div>
- <div><dt>Security deposit</dt><dd>${money(s.deposit||0)}</dd></div></dl>
- <div class="folio"><strong>Room folio</strong>${s.folio.map(f=>`<div><span>${f[0]}</span><span>${money(f[1])}</span></div>`).join('')}<div class="folio-paid"><span>Paid</span><span>-${money(s.paid)}</span></div><div class="folio-total"><span>Room balance</span><span>${money(roomBalance)}</span></div></div>`;
+ const res=resFor(s.ref,r.n);
+ $('checkoutHeader').innerHTML=guestHead(s.guest,[`${icon('bed','xs')}Room ${r.n} · ${r.type}`,`${icon('tag','xs')}<span class="ref">${s.ref}</span>`,`${icon('calendar','xs')}${fmtDay(s.checkIn)} – ${fmtDay(s.checkOut)}`],res?statusBadge(res.status):'');
+ box.innerHTML=`${rows([
+   ...s.folio.map(f=>[esc(f[0]),money(f[1])]),
+   ['Paid',`− ${money(s.paid)}`,'sub'],
+   ['Room balance',`<span class="${roomBalance>0?'warn-text':'ok-text'}">${money(roomBalance)}</span>`,'total']
+ ])}
+ <div class="mt-4">${kv([['Guests',guestsText(s.adults,s.kids)],['Nights',nights(s.checkIn,s.checkOut)],['Security deposit',money(s.deposit||0)],['Guest requests',reqs.length?reqs.flatMap(x=>x.items.map(i=>`${esc(i.name)} ×${i.qty}`)).join(', '):'None']])}</div>`;
 
+ const methodText=$('checkoutMethodText');
  if(s.inspStatus!=='done'){
    // ----- Step 1: before inspection -----
    const bal=roomBalance,due=Math.max(0,bal-paidIn);
-   $('checkoutBalance').textContent=money(due);
-   $('checkoutBalance').className=due>0?'warn-text':'ok-text';
    if(s.inspStatus==='pending'){
-     stageBox.innerHTML=`<div class="stage-flow"><span class="flow-step done">Room balance</span><span class="flow-step active">Room inspection</span><span class="flow-step">Deposit settlement</span><span class="flow-step">Checkout</span></div><div class="notice warn">Room ${r.n} is with housekeeping for inspection. Checkout can be completed once the inspection is submitted.</div>`;
-     btn.textContent='Awaiting Inspection';btn.disabled=true;
+     $('checkoutStepper').innerHTML=stepper([{label:'Room balance',state:'done'},{label:'Room inspection',state:'waiting'},{label:'Deposit settlement',state:''},{label:'Checked out',state:''}]);
+     const t=tasks.find(x=>x.room===r.n&&x.kind==='inspection'&&x.status!=='Completed');
+     stageBox.innerHTML=`<div class="callout warning">${icon('clock','sm')}<div class="grow"><strong>Room ${r.n} is with housekeeping for inspection.</strong><br>Checkout can be completed once the inspection is submitted${t?` · requested ${fmtTime(t.assignedAt)}`:''}.</div></div>${s.checkoutNote?`<p class="field-hint mt-4">Desk note: “${esc(s.checkoutNote)}”</p>`:''}`;
+     show('checkoutPaySection',false);
+     btn.textContent='Awaiting inspection';btn.disabled=true;
+     $('checkoutFootNote').innerHTML=`${icon('info','sm')}You'll be notified when the inspection is submitted.`;
    }else{
-     stageBox.innerHTML=`<div class="stage-flow"><span class="flow-step active">Room balance</span><span class="flow-step">Room inspection</span><span class="flow-step">Deposit settlement</span><span class="flow-step">Checkout</span></div><div class="notice">Settle any outstanding room balance, then send the room to housekeeping for a checkout inspection.</div>`;
-     btn.textContent=due>0?'Settle Balance & Start Inspection':'Start Room Inspection';btn.disabled=false;
+     $('checkoutStepper').innerHTML=stepper([{label:'Room balance',state:'current'},{label:'Room inspection',state:''},{label:'Deposit settlement',state:''},{label:'Checked out',state:''}]);
+     stageBox.innerHTML=`<div class="callout info">${icon('info','sm')}<span>Settle any outstanding room balance, then send the room to housekeeping for a checkout inspection. The guest can be checked out once the inspection is submitted.</span></div>`;
+     $('checkoutPayTitle').textContent=bal>0?'Settle room balance':'Room balance';
+     methodText.textContent='Payment method';
+     show('checkoutMethodLabel',bal>0);show('checkoutPaidLabel',bal>0);show('checkoutNotesLabel',true);
+     $('checkoutBalanceLabel').textContent=bal>0?'Room balance left to settle':'No room balance outstanding';
+     setPayBox('checkoutPayBox','checkoutBalance',due);
+     $('checkoutFill').textContent=`Full balance ${money(bal)}`;$('checkoutFill').dataset.amount=bal;
+     if(due>0){btn.disabled=true;btn.textContent=`Collect ${money(due)} to start inspection`;}
+     else{btn.disabled=false;btn.textContent=bal>0?'Settle balance & start inspection':'Start room inspection';}
+     $('checkoutFootNote').innerHTML=`${icon('info','sm')}Housekeeping will be asked to inspect Room ${r.n}.`;
    }
  }else{
    // ----- Step 2: inspection complete, settle deposit -----
    const m=depositMath(s);
-   $('checkoutBalance').textContent=money(Math.max(0,m.extra-paidIn));
-   $('checkoutBalance').className=m.extra-paidIn>0?'warn-text':'ok-text';
-   stageBox.innerHTML=`<div class="stage-flow"><span class="flow-step done">Room balance</span><span class="flow-step done">Room inspection</span><span class="flow-step active">Deposit settlement</span><span class="flow-step">Checkout</span></div>
-   <div class="inspection-result ${m.damages>0?'has-damage':'clean'}">
-     <div class="ir-head"><strong>${m.damages>0?'Damages found during inspection':'No issues found'}</strong><span>Inspected by ${esc(s.inspBy||'Housekeeping')}</span></div>
-     ${s.incidents.length?`<ul class="ir-list">${s.incidents.map(i=>`<li><span>${esc(i.item)} · ${i.category}${i.category==='Missing Item'?` ×${i.qty}`:''}</span><span>${money(incidentCost(i))}</span></li>`).join('')}</ul>`:'<p class="ir-clean">The room passed inspection with no damages or missing items.</p>'}
-   </div>
-   <div class="deposit-box">
-     <div><span>Security deposit</span><strong>${money(m.deposit)}</strong></div>
-     <div><span>Total damages / deductions</span><strong>${money(m.damages)}</strong></div>
-     <div><span>Deducted from deposit</span><strong>${money(m.applied)}</strong></div>
-     <div class="dep-refund"><span>Refundable deposit</span><strong class="ok-text">${money(m.refund)}</strong></div>
-     ${m.extra>0?`<div class="dep-extra"><span>Additional amount due</span><strong class="warn-text">${money(m.extra)}</strong></div>`:''}
-   </div>`;
-   btn.textContent=m.extra>0?'Collect Charges & Complete Checkout':(m.refund>0?'Refund Deposit & Complete Checkout':'Complete Checkout');
-   btn.disabled=false;
+   $('checkoutStepper').innerHTML=stepper([{label:'Room balance',state:'done'},{label:'Room inspection',state:'done'},{label:'Deposit settlement',state:m.extra>0?'waiting':'current'},{label:'Checked out',state:''}]);
+   const findings=s.incidents||[];
+   stageBox.innerHTML=`<div class="callout ${m.damages>0?'warning':'success'}">${icon(m.damages>0?'alert-circle':'check-circle','sm')}<div class="grow"><strong>${m.damages>0?'Damages found during inspection':'No issues found'}</strong> · inspected by ${esc(s.inspBy||'Housekeeping')}
+     ${findings.length?`<ul class="finding-list mt-4">${findings.map(i=>`<li><span>${esc(i.item)} · ${i.category}${i.category==='Missing Item'?` ×${i.qty}`:''}${i.status==='Waived'?' · <em>waived</em>':''}</span><span>${money(incidentCost(i))}</span></li>`).join('')}</ul>`:'<p style="margin-top:4px">The room passed inspection with no damages or missing items.</p>'}
+     ${s.inspRemarks?`<p class="field-hint" style="margin-top:6px">Remarks: “${esc(s.inspRemarks)}”</p>`:''}</div></div>
+   <div class="mt-4">${depositBlock(m)}</div>`;
+   show('checkoutNotesLabel',false);
+   const owed=Math.max(0,m.extra-paidIn);
+   if(m.extra>0){
+     $('checkoutPayTitle').textContent='Collect additional charges';methodText.textContent='Payment method';
+     show('checkoutMethodLabel',true);show('checkoutPaidLabel',true);
+     $('checkoutBalanceLabel').textContent='Additional charges left to collect';
+     setPayBox('checkoutPayBox','checkoutBalance',owed);
+     $('checkoutFill').textContent=`Full amount ${money(m.extra)}`;$('checkoutFill').dataset.amount=m.extra;
+   }else if(m.refund>0){
+     $('checkoutPayTitle').textContent='Refund deposit';methodText.textContent='Refund method';
+     show('checkoutMethodLabel',true);show('checkoutPaidLabel',false);
+     $('checkoutBalanceLabel').textContent='Deposit to return to the guest';
+     setPayBox('checkoutPayBox','checkoutBalance',m.refund,{tone:'settled'});
+   }else{
+     $('checkoutPayTitle').textContent='Deposit settlement';
+     show('checkoutMethodLabel',false);show('checkoutPaidLabel',false);
+     $('checkoutBalanceLabel').textContent='Deposit fully applied to damages';
+     setPayBox('checkoutPayBox','checkoutBalance',0);
+   }
+   if(owed>0){btn.disabled=true;btn.textContent=`Collect ${money(owed)} to complete checkout`;}
+   else{btn.disabled=false;btn.textContent=m.extra>0?'Collect charges & complete checkout':(m.refund>0?`Refund ${money(m.refund)} & complete checkout`:'Complete checkout');}
+   $('checkoutFootNote').innerHTML=`${icon('info','sm')}Room ${r.n} will be marked for cleaning.`;
  }
 }
 function wireTransactionForms(){
- $('checkinReservation').onchange=()=>{$('checkinPaid').value=0;updateCheckinSummary();};
+ $('checkinReservation').onchange=()=>{$('checkinPaid').value=0;applyCheckinReservation();updateCheckinSummary();};
  $('checkinPaid').oninput=updateCheckinSummary;
+ ['checkinRoom','checkinAdults','checkinKids'].forEach(id=>$(id).oninput=$(id).onchange=updateCheckinSummary);
+ $('checkinFill').onclick=()=>{const r=currentRes();if(r){$('checkinPaid').value=resBal(r);updateCheckinSummary();}};
+ $('checkinQueueSearch').oninput=renderCheckinQueue;
  $('walkinType').onchange=()=>{refreshWalkinRooms();updateWalkinSummary();};
- ['walkinRoom','walkinNights','walkinPaid'].forEach(id=>$(id).oninput=$(id).onchange=updateWalkinSummary);
+ ['walkinRoom','walkinNights','walkinPaid','walkinAdults','walkinKids'].forEach(id=>$(id).oninput=$(id).onchange=updateWalkinSummary);
+ $('walkinFill').onclick=()=>{const r=rooms.find(x=>x.n===$('walkinRoom').value);if(r){$('walkinPaid').value=r.rate*(+$('walkinNights').value||1)+DEPOSIT;updateWalkinSummary();}};
  $('checkoutGuest').onchange=()=>{$('checkoutPaid').value=0;updateCheckoutSummary();};
  $('checkoutPaid').oninput=updateCheckoutSummary;
+ $('checkoutFill').onclick=()=>{$('checkoutPaid').value=+$('checkoutFill').dataset.amount||0;updateCheckoutSummary();};
+ $('checkoutQueueSearch').oninput=renderCheckoutQueue;
 
  $('checkinForm').onsubmit=e=>{
    e.preventDefault();
-   const r=currentRes();if(!r)return showToast('Select a reservation first.');
+   const r=currentRes();if(!r)return warn('Select a reservation first.');
    const due=resBal(r),paid=+$('checkinPaid').value||0;
-   if(paid<due)return showToast(`Outstanding balance of ${money(due-paid)} must be settled first.`);
+   if(paid<due)return warn(`Outstanding balance of ${money(due-paid)} must be settled first.`);
    const roomNo=$('checkinRoom').value;
    const room=rooms.find(x=>x.n===roomNo);
-   if(!room)return showToast('Select an available room.');
+   if(!room)return warn('Select an available room.');
    room.status='occupied';
    room.stay=stay(r.guest,r.ref,r.checkIn,r.checkOut,+$('checkinAdults').value,+$('checkinKids').value,[[`Room charge · ${nights(r.checkIn,r.checkOut)} nights`,r.total]],r.total);
    r.paid=r.total;r.status='Checked in';r.room=roomNo;
    if(paid>0)transactions.unshift({when:nowISO(),ref:r.ref,guest:r.guest,room:roomNo,type:'Check-in payment',method:$('checkinMethod').value,amount:paid,staff:currentUser.name});
-   $('checkinPaid').value=0;
+   $('checkinPaid').value=0;lastCheckinRef=null;
    renderAll();showToast(`${r.guest} checked into Room ${roomNo}.`);
  };
  $('walkinForm').onsubmit=e=>{
    e.preventDefault();
+   if(!validateRequired(e.target))return;
    const room=rooms.find(x=>x.n===$('walkinRoom').value);
-   if(!room)return showToast('No room available for that type.');
+   if(!room)return warn('No room available for that type.');
    const n=+$('walkinNights').value||1,total=room.rate*n+DEPOSIT,paid=+$('walkinPaid').value||0;
-   if(paid<total)return showToast(`Room charge and deposit (${money(total)}) must be settled first.`);
+   if(paid<total)return warn(`Room charge and deposit (${money(total)}) must be settled first.`);
    const g=$('walkinGuest').value.trim()||'Walk-in Guest';
    const ref=`WALK-${String(nextId()).slice(-4)}`;
    room.status='occupied';
    room.stay=stay(g,ref,T,isoDate(dayOff(n)),+$('walkinAdults').value,+$('walkinKids').value,[[`Room charge · ${n} night${n>1?'s':''}`,room.rate*n]],room.rate*n);
    reservations.unshift({ref,guest:g,contact:$('walkinContact').value,source:'Walk-in',checkIn:T,checkOut:isoDate(dayOff(n)),roomType:room.type,room:room.n,adults:+$('walkinAdults').value,kids:+$('walkinKids').value,total:room.rate*n,paid:room.rate*n,status:'Checked in'});
    transactions.unshift({when:nowISO(),ref,guest:g,room:room.n,type:'Walk-in payment',method:$('walkinMethod').value,amount:paid,staff:currentUser.name});
-   e.target.reset();$('walkinNights').value=1;$('walkinPaid').value=0;
+   e.target.reset();clearValidation(e.target);$('walkinNights').value=1;$('walkinPaid').value=0;
    renderAll();showToast(`${g} registered into Room ${room.n}.`);
  };
  $('checkoutForm').onsubmit=e=>{
    e.preventDefault();
    const room=rooms.find(x=>x.n===$('checkoutGuest').value);
-   if(!room||!room.stay)return showToast('Select an in-house guest.');
+   if(!room||!room.stay)return warn('Select an in-house guest.');
    const s=room.stay,g=s.guest,paid=+$('checkoutPaid').value||0;
 
-   if(s.inspStatus==='pending')return showToast(`Room ${room.n} is still being inspected by housekeeping.`);
+   if(s.inspStatus==='pending')return warn(`Room ${room.n} is still being inspected by housekeeping.`);
 
    if(s.inspStatus!=='done'){
      // ----- Step 1: settle room balance, then send for inspection -----
      const bal=roomBal(room);
-     if(paid<bal)return showToast(`Room balance of ${money(bal-paid)} must be settled before inspection.`);
+     if(paid<bal)return warn(`Room balance of ${money(bal-paid)} must be settled before inspection.`);
      if(paid>0){s.paid+=paid;transactions.unshift({when:nowISO(),ref:s.ref,guest:g,room:room.n,type:'Check-out payment',method:$('checkoutMethod').value,amount:paid,staff:currentUser.name});}
      s.inspStatus='pending';s.checkoutNote=$('checkoutNotes').value;
      setResStatus(s.ref,'Pending Room Inspection',room.n);
@@ -975,7 +1502,7 @@ function wireTransactionForms(){
    // ----- Step 2: inspection done — settle deposit and finalise -----
    const m=depositMath(s);
    const owed=Math.max(0,m.extra-paid);
-   if(owed>0)return showToast(`Additional charges of ${money(owed)} must be settled to complete checkout.`);
+   if(owed>0)return warn(`Additional charges of ${money(owed)} must be settled to complete checkout.`);
    if(m.extra>0&&paid>0)transactions.unshift({when:nowISO(),ref:s.ref,guest:g,room:room.n,type:'Damage charge',method:$('checkoutMethod').value,amount:m.extra,staff:currentUser.name});
    // Record the deposit settlement (refund or full consumption).
    transactions.unshift({when:nowISO(),ref:s.ref,guest:g,room:room.n,type:m.refund>0?'Deposit refund':'Deposit forfeited',method:m.refund>0?$('checkoutMethod').value:'—',amount:m.refund>0?-m.refund:0,staff:currentUser.name,depositApplied:m.applied});
@@ -994,73 +1521,76 @@ function wireTransactionForms(){
 }
 
 /* ============================================================
-   HOUSEKEEPING — full cleaning workflow
+   HOUSEKEEPING — Assigned → In Progress → Ready for Inspection → Completed
    ============================================================ */
-function taskRow(t){
- return `<div class="task-row">
-   <div class="tr-room">${t.room}</div>
-   <div class="tr-main"><strong>${t.type}</strong><p>${t.note||`Assigned to ${t.staff}`}</p>
-     <div class="tr-meta"><span class="badge ${t.priority==='High'||t.priority==='Urgent'?'high':'low'}">${t.priority}</span><span class="stage-pill stage-${t.status.replace(/ /g,'')}">${t.status}</span></div></div>
-   <div class="tr-actions">${taskActions(t)}</div>
- </div>`;
-}
-function taskActions(t){
+function taskActions(t,size='btn-sm'){
  const r=currentUser.role;
  // Checkout-inspection tasks open the inspection form directly (for HK & supervisor).
  if(t.kind==='inspection'){
    if(['housekeeper','supervisor'].includes(r)&&t.status!=='Completed'){
      const room=rooms.find(x=>x.n===t.room);
-     if(room&&room.stay)return `<button class="mini-button primary" data-inspect-room="${t.room}">Inspect room</button>`;
+     if(room&&room.stay)return `<button class="btn btn-primary ${size}" data-inspect-room="${t.room}" type="button">${icon('clipboard','sm')}Inspect room</button>`;
    }
-   return `<span class="await-note ${t.status==='Completed'?'ok-text':''}">${t.status==='Completed'?'Inspected':'Checkout inspection'}</span>`;
+   return `<span class="await-note ${t.status==='Completed'?'ok-text':''}">${icon(t.status==='Completed'?'check-circle':'clipboard','sm')}${t.status==='Completed'?'Inspected':'Checkout inspection'}</span>`;
  }
  if(r==='housekeeper'&&t.staff===currentUser.name){
-   if(t.status==='Assigned')return `<button class="mini-button primary" data-task-advance="${t.id}">Start cleaning</button>`;
-   if(t.status==='In Progress')return `<button class="mini-button primary" data-task-advance="${t.id}">Submit for inspection</button>`;
-   if(t.status==='Ready for Inspection')return `<span class="await-note">Waiting for supervisor</span>`;
-   return `<span class="await-note ok-text">Approved</span>`;
+   if(t.status==='Assigned')return `<button class="btn btn-primary ${size}" data-task-advance="${t.id}" type="button">${icon('sparkle','sm')}Start cleaning</button>`;
+   if(t.status==='In Progress')return `<button class="btn btn-primary ${size}" data-task-advance="${t.id}" type="button">${icon('check','sm')}Submit for inspection</button>`;
+   if(t.status==='Ready for Inspection')return `<span class="await-note">${icon('clock','sm')}Waiting for supervisor</span>`;
+   return `<span class="await-note ok-text">${icon('check-circle','sm')}Approved</span>`;
  }
  if(r==='supervisor'){
    let out='';
-   if(t.status==='Ready for Inspection')out+=`<button class="mini-button primary" data-inspect="${t.id}">Inspect</button>`;
-   if(t.status!=='Completed')out+=`<button class="mini-button" data-reassign="${t.id}">Reassign</button>`;
-   return out||`<span class="await-note ok-text">Approved</span>`;
+   if(t.status==='Ready for Inspection')out+=`<button class="btn btn-primary ${size}" data-inspect="${t.id}" type="button">Inspect</button>`;
+   if(t.status!=='Completed')out+=`<button class="btn btn-secondary ${size}" data-reassign="${t.id}" type="button">${t.staff==='Unassigned'?'Assign':'Reassign'}</button>`;
+   return out||`<span class="await-note ok-text">${icon('check-circle','sm')}Approved</span>`;
  }
  return `<span class="await-note">${t.status}</span>`;
 }
+function taskFeedback(t){return t.inspection?`<div class="task-feedback ${t.inspection.result==='Approved'||t.inspection.result==='No issues found'?'ok':'warn'}">${esc(t.inspection.result)} by ${esc(t.inspection.by)}${t.inspection.note?` — ${esc(t.inspection.note)}`:''}</div>`:'';}
+// Room-by-room row used on the housekeeper's dashboard and task page (touch friendly).
+function myTaskRow(t){
+ return `<div class="my-task${t.reworked&&t.status==='In Progress'?' returned':''}">
+   <span class="li-lead">${t.room}</span>
+   <div style="min-width:0"><div class="task-top" style="justify-content:flex-start;flex-wrap:wrap"><strong>${esc(t.type)}</strong>${taskChip(t.status)}${/high|urgent/i.test(t.priority)?prioTag(t.priority):''}</div>
+     <p class="task-note" style="margin-top:4px">${esc(t.note||'No special instructions.')}</p>
+     ${t.status==='In Progress'&&t.inspection?taskFeedback(t):''}</div>
+   <div class="mt-actions">${taskActions(t,'btn-lg')}</div>
+   ${t.status==='In Progress'?`<details class="checks-ref"><summary>${icon('clipboard','sm')}What the supervisor will check</summary><ul>${INSPECT_CHECKS.map(c=>`<li>${icon('check','xs')}${c}</li>`).join('')}</ul></details>`:''}
+ </div>`;
+}
+function taskCard(t){
+ return `<article class="task${t.reworked&&t.status==='In Progress'?' returned':''}">
+   <div class="task-top"><span class="task-room">Room ${t.room}</span>${prioTag(t.priority)}</div>
+   <div class="task-type">${esc(t.type)}</div>
+   ${t.note?`<p class="task-note">${esc(t.note)}</p>`:''}
+   <div class="task-meta"><span class="avatar sm">${t.staff==='Unassigned'?'?':initials(t.staff)}</span>${t.staff==='Unassigned'?'<span class="warn-text">Unassigned</span>':esc(t.staff)}</div>
+   ${taskFeedback(t)}
+   <div class="task-actions">${taskActions(t)}</div>
+ </article>`;
+}
 function renderTasks(){
  const isHk=currentUser.role==='housekeeper';
- setPageSubtitle('housekeeping',isHk?`Your assigned rooms, ${currentUser.name.split(' ')[0]}. Move each one through the workflow as you go.`:'Track every room from assignment through supervisor inspection.');
+ setPageSubtitle('housekeeping',isHk?`Your assigned rooms, ${firstName(currentUser.name)}. Move each one through the workflow as you go.`:'Every room from assignment through supervisor inspection. Only the supervisor can approve a room.');
  const visible=isHk?myTasks():tasks;
- $('hkStats').innerHTML=statCards(TASK_FLOW.map(s=>{
-   const n=visible.filter(t=>t.status===s).length;
-   return [s,n,{Assigned:'not started','In Progress':'being cleaned','Ready for Inspection':'awaiting approval',Completed:'approved'}[s],s==='Ready for Inspection'&&n&&currentUser.role==='supervisor'?'warn':''];
- }));
+ const hint={Assigned:'not started','In Progress':'being cleaned','Ready for Inspection':'awaiting approval',Completed:'approved'};
+ const label={Assigned:'Assigned','In Progress':'In progress','Ready for Inspection':'Ready for inspection',Completed:'Completed'};
+ $('hkStats').innerHTML=`<div class="pipeline">${TASK_FLOW.map(s=>{const n=visible.filter(t=>t.status===s).length;return `<div class="pipe${s==='Ready for Inspection'&&n&&currentUser.role==='supervisor'?' attn':''}"><span class="pipe-label">${label[s]}</span><span class="pipe-value">${n}</span><span class="pipe-sub">${hint[s]}</span></div>`;}).join('')}</div>`;
  $('workloadPanel').innerHTML=currentUser.role==='supervisor'||currentUser.role==='manager'
-   ? panel('Team Workload','Assign new rooms to whoever has the lightest load',workloadBars())
+   ? `<div style="margin-bottom:16px">${card('Team workload','Assign new rooms to whoever has the lightest load',workloadBars(),currentUser.role==='supervisor'?`<button class="btn btn-secondary btn-sm" data-dash-assign="1" type="button">${icon('plus','sm')}Assign</button>`:'',{icon:'users'})}</div>`
    :'';
- $('housekeepingBoard').innerHTML=TASK_FLOW.map(col=>{
-   const list=visible.filter(t=>t.status===col);
-   return `<div class="kanban-column"><h3>${col}<span>${list.length}</span></h3>${list.map(t=>`
-     <div class="task-card">
-       <div class="tc-head"><h4>Room ${t.room}</h4><span class="badge ${t.priority==='High'||t.priority==='Urgent'?'high':'low'}">${t.priority}</span></div>
-       <p class="tc-type">${t.type}</p>
-       ${t.note?`<p>${esc(t.note)}</p>`:''}
-       <p class="tc-staff">${t.staff}</p>
-       ${t.inspection?`<div class="tc-inspection ${t.inspection.result==='Approved'?'ok':'warn'}">${t.inspection.result} by ${t.inspection.by}${t.inspection.note?` — ${esc(t.inspection.note)}`:''}</div>`:''}
-       <div class="task-buttons">${taskActions(t)}</div>
-     </div>`).join('')||`<div class="empty-task-state">No rooms here.</div>`}</div>`;
- }).join('');
- bindTaskActions();
+ if(isHk){
+   const groups=[['Assigned','To do'],['In Progress','In progress'],['Ready for Inspection','Waiting for inspection'],['Completed','Approved']];
+   $('housekeepingBoard').innerHTML=visible.length?groups.map(([s,l])=>{const items=visible.filter(t=>t.status===s);if(!items.length)return '';return `<h2 class="section-title">${l} <span class="card-count">${items.length}</span></h2><div class="my-tasks">${items.map(myTaskRow).join('')}</div>`;}).join(''):`<div class="card">${empty('No rooms assigned to you yet.','Your supervisor assigns rooms after checkouts.',{icon:'sparkle'})}</div>`;
+ }else{
+   $('housekeepingBoard').innerHTML=`<div class="board">${TASK_FLOW.map(col=>{
+     const items=visible.filter(t=>t.status===col);
+     return `<section class="board-col" aria-label="${label[col]}"><div class="board-col-head"><h2>${taskChip(col)}</h2><span class="card-count">${items.length}</span></div>${items.map(taskCard).join('')||`<div class="board-empty">No rooms here.</div>`}</section>`;
+   }).join('')}</div>`;
+ }
+ bindAll($('housekeeping'));
 }
-function bindTaskActions(){
- document.querySelectorAll('[data-task-advance]').forEach(b=>b.onclick=()=>advanceTask(+b.dataset.taskAdvance));
- document.querySelectorAll('[data-inspect]').forEach(b=>b.onclick=()=>openInspect(+b.dataset.inspect));
- document.querySelectorAll('[data-inspect-room]').forEach(b=>b.onclick=()=>openRoomInspection(b.dataset.inspectRoom));
- document.querySelectorAll('[data-reassign]').forEach(b=>b.onclick=()=>openAssignModal(+b.dataset.reassign));
- document.querySelectorAll('[data-assess]').forEach(b=>b.onclick=()=>openAssess(+b.dataset.assess));
- document.querySelectorAll('.housekeeper-report').forEach(b=>b.onclick=openIssueModal);
-}
+function bindTaskActions(){bindAll();}
 function advanceTask(id){
  const t=tasks.find(x=>x.id===id);if(!t)return;
  if(t.status==='Assigned'){
@@ -1072,14 +1602,24 @@ function advanceTask(id){
    notify(['supervisor'],'Room ready for inspection',`Room ${t.room} was submitted by ${currentUser.name}.`);
    showToast(`Room ${t.room} submitted for inspection.`);
  }
- renderAll();
+ closeDrawer();renderAll();
 }
+// Supervisor cleaning inspection. Items start unticked so each one is a
+// deliberate check; approval stays blocked until every item passes.
 function openInspect(id){
  const t=tasks.find(x=>x.id===id);if(!t)return;
  $('inspectTaskId').value=id;
  $('inspectTitle').textContent=`Inspect Room ${t.room}`;
- $('inspectChecklist').innerHTML=`<p class="checklist-label">Inspection checklist</p>`+INSPECT_CHECKS.map((c,i)=>`<label class="check-row"><input type="checkbox" class="inspect-check" checked data-c="${i}"> ${c}</label>`).join('');
+ $('inspectDesc').innerHTML=`${esc(t.type)} by <strong>${esc(t.staff)}</strong>${t.reworked?' · re-submitted after recleaning':''}. Tick each item as you verify it — approval needs every item to pass.`;
+ $('inspectChecklist').innerHTML=INSPECT_CHECKS.map((c,i)=>`<label class="check-row"><input type="checkbox" class="inspect-check" data-c="${i}"> ${c}</label>`).join('');
  $('inspectNote').value='';
+ const sync=()=>{
+   const boxes=[...document.querySelectorAll('.inspect-check')],done=boxes.filter(b=>b.checked).length;
+   $('inspectProgress').innerHTML=`<span>${done} of ${boxes.length} checked</span><div class="progress success"><span style="width:${done/boxes.length*100}%"></span></div>`;
+   $('inspectApprove').disabled=done<boxes.length;
+   $('inspectApprove').title=done<boxes.length?'Tick every item to approve':'';
+ };
+ document.querySelectorAll('.inspect-check').forEach(b=>b.onchange=sync);sync();
  openBackdrop('inspectBackdrop');
 }
 function finishInspection(approved){
@@ -1087,7 +1627,7 @@ function finishInspection(approved){
  const note=$('inspectNote').value.trim();
  if(approved){
    const unchecked=[...document.querySelectorAll('.inspect-check')].filter(c=>!c.checked).length;
-   if(unchecked)return showToast(`${unchecked} checklist item${unchecked>1?'s are':' is'} unticked. Approve only a fully passed room.`);
+   if(unchecked)return warn(`${unchecked} checklist item${unchecked>1?'s are':' is'} unticked. Approve only a fully passed room.`);
    t.status='Completed';t.completedAt=nowISO();
    t.inspection={result:'Approved',by:currentUser.name,note,reworked:!!t.reworked};
    const room=rooms.find(r=>r.n===t.room);
@@ -1098,23 +1638,41 @@ function finishInspection(approved){
    t.status='In Progress';t.reworked=true;t.submittedAt=null;
    t.inspection={result:'Returned for recleaning',by:currentUser.name,note};
    notify(['housekeeper'],'Room returned',`Room ${t.room} needs recleaning${note?`: ${note}`:'.'}`);
-   showToast(`Room ${t.room} returned to ${t.staff} for recleaning.`);
+   showToast(`Room ${t.room} returned to ${t.staff} for recleaning.`,'info');
  }
  closeBackdrop('inspectBackdrop');renderAll();
 }
-function openAssignModal(taskId){
+function openAssignModal(taskId,roomNo){
+ if(typeof taskId!=='number')taskId=null; // guard: never treat a click event as a task id
  const busy=housekeepers.map(h=>[h,tasks.filter(t=>t.staff===h&&t.status!=='Completed').length]).sort((a,b)=>a[1]-b[1]);
- $('assignWorkloadHint').innerHTML=`Lightest load right now: <strong>${busy[0][0]}</strong> (${busy[0][1]} active task${busy[0][1]===1?'':'s'}).`;
+ $('assignWorkloadHint').innerHTML=`Lightest load right now: <strong>${busy[0][0]}</strong> (${busy[0][1]} active task${busy[0][1]===1?'':'s'}). They're preselected below.`;
  $('assignStaff').innerHTML=busy.map(([h,c])=>`<option value="${h}">${h} — ${c} active</option>`).join('');
  const dirty=rooms.filter(r=>r.status==='cleaning'||r.status==='available');
- $('assignRoom').innerHTML=dirty.map(r=>`<option value="${r.n}">Room ${r.n} · ${r.type} · ${r.status}</option>`).join('');
+ // Rooms that still need a cleaning task are listed first.
+ dirty.sort((a,b)=>(a.status==='cleaning'?0:1)-(b.status==='cleaning'?0:1));
+ $('assignRoom').innerHTML=dirty.map(r=>`<option value="${r.n}">Room ${r.n} · ${r.type} · ${ROOM_LABEL[r.status]}</option>`).join('');
+ $('assignRoom').disabled=false;
  $('assignTaskForm').dataset.taskId=taskId||'';
- if(taskId){const t=tasks.find(x=>x.id===taskId);if(t){$('assignRoom').innerHTML=`<option value="${t.room}">Room ${t.room}</option>`;$('assignType').value=t.type;$('assignPriority').value=t.priority==='Normal'?'Normal':t.priority;}}
+ $('assignTitle').textContent='Assign housekeeping task';$('assignSubmitBtn').textContent='Assign task';
+ if(roomNo&&dirty.some(r=>r.n===roomNo))$('assignRoom').value=roomNo;
+ if(taskId){const t=tasks.find(x=>x.id===taskId);if(t){
+   $('assignRoom').innerHTML=`<option value="${t.room}">Room ${t.room}</option>`;$('assignRoom').disabled=true;
+   $('assignType').value=t.type;$('assignPriority').value=t.priority==='Normal'?'Normal':t.priority;
+   $('assignTitle').textContent=t.staff==='Unassigned'?`Assign Room ${t.room}`:`Reassign Room ${t.room}`;
+   $('assignSubmitBtn').textContent=t.staff==='Unassigned'?'Assign housekeeper':'Save reassignment';
+ }}
  openBackdrop('assignTaskModalBackdrop');
+}
+function showCleaningHistory(){
+ $('modalTitle').textContent='Cleaning history';
+ $('modalDesc').textContent='Rooms approved by the housekeeping supervisor.';$('modalDesc').classList.remove('hidden');
+ const done=tasks.filter(t=>t.status==='Completed');
+ $('modalContent').innerHTML=done.length?`<div class="card flush"><div class="table-wrap"><table class="data responsive"><thead><tr><th>Room</th><th>Task</th><th>Housekeeper</th><th>Inspection</th><th>Notes</th></tr></thead><tbody>${done.map(t=>`<tr><td class="primary-cell" data-label="Room"><span class="cell-main">Room ${t.room}</span></td><td data-label="Task">${esc(t.type)}</td><td data-label="Housekeeper">${esc(t.staff)}</td><td data-label="Inspection">${t.kind==='inspection'?chip(t.inspection?.result||'Inspected','info'):chip(t.inspection?.reworked?'Passed after recleaning':'Passed first time',t.inspection?.reworked?'warning':'success',{dot:true})}</td><td data-label="Notes">${esc(t.inspection?.note)||'—'}</td></tr>`).join('')}</tbody></table></div></div>`:empty('No completed rooms yet.');
+ openBackdrop('modalBackdrop');
 }
 
 /* ============================================================
-   ROOM INSPECTIONS (checkout inspection workflow)
+   CHECKOUT ROOM INSPECTIONS
    ============================================================ */
 const CHECKOUT_INSPECT_CHECKS=['Walls, furniture and fixtures undamaged','Bathroom fittings intact','TV, aircon and appliances working','Towels, linen and amenities complete','No missing room items','Room keys / access cards returned'];
 // Rooms currently awaiting or undergoing a checkout inspection.
@@ -1123,48 +1681,48 @@ let inspectFindings=[]; // working set while the modal is open
 
 function renderInspections(){
  const sf=$('inspStatusFilter').value;
- const active=inspectionRooms();
+ const active=inspectionRooms(),inspected=roomsInspected();
  const doneToday=incidents.filter(i=>i.date.slice(0,10)===T);
  const canInspect=['housekeeper','supervisor'].includes(currentUser.role);
+ const checkedOut=reservations.filter(r=>r.status==='Checked Out');
  setPageSubtitle('inspection',canInspect
    ?'Inspect each room before its guest checks out. Record any damages, missing items or incidents.'
-   :'Rooms awaiting a checkout inspection by housekeeping.');
- $('inspStats').innerHTML=statCards([
-   ['Awaiting inspection',active.length,'guests pending checkout',active.length?'warn':''],
-   ['Incidents today',doneToday.length,'raised during inspections'],
-   ['Damage charges today',money(doneToday.reduce((a,i)=>a+incidentCost(i),0)),'billed to guests'],
-   ['Deposits at risk',active.length,'held until inspection']
+   :'Rooms awaiting a checkout inspection by housekeeping, and inspections ready for the front desk.');
+ $('inspStats').innerHTML=statStrip([
+   {label:'Awaiting inspection',value:active.length,sub:'guests pending checkout',attn:active.length>0},
+   {label:'Inspected',value:inspected.length,sub:'waiting for front desk checkout'},
+   {label:'Incidents today',value:doneToday.length,sub:'raised during inspections'},
+   {label:'Damage charges today',value:money(doneToday.reduce((a,i)=>a+incidentCost(i),0)),sub:'recorded against deposits'}
  ]);
- let list=active;
- if(sf==='Completed')list=[];
- const grid=$('inspectionGrid');
- if(sf==='Completed'){
-   // Show recently completed inspections (rooms already checked out have no stay,
-   // so summarise from incidents + checked-out reservations).
-   const done=reservations.filter(r=>r.status==='Checked Out').slice(0,9);
-   grid.innerHTML=done.length?done.map(r=>{const inc=incidents.filter(i=>i.booking===r.ref||i.room===r.room);return `<article class="item-card insp-card"><div class="lf-head"><h4>Room ${r.room}</h4><span class="badge low">Checked out</span></div><p>${esc(r.guest)} · ${r.ref}</p><div class="lf-meta"><span>${inc.length?`${inc.length} incident${inc.length>1?'s':''}`:'No issues found'}</span></div></article>`;}).join(''):emptyState('No completed inspections yet.');
-   return;
- }
- grid.innerHTML=list.length?list.map(r=>{const s=r.stay;return `<article class="item-card insp-card">
-   <div class="lf-head"><h4>Room ${r.n}</h4><span class="badge medium">Awaiting inspection</span></div>
-   <p>${esc(s.guest)} · ${s.ref}</p>
-   <div class="lf-meta"><span>◷ Checkout requested</span><span>👤 ${s.adults+s.kids} guest${s.adults+s.kids>1?'s':''}</span><span>Deposit ${money(s.deposit||0)}</span></div>
-   <footer>${canInspect?`<button class="mini-button primary" data-inspect-room="${r.n}">Start Inspection</button>`:`<span class="muted-text">Housekeeping to inspect</span>`}</footer>
- </article>`;}).join(''):emptyState('No rooms are awaiting inspection.','Rooms appear here when the front desk starts a checkout.');
- document.querySelectorAll('[data-inspect-room]').forEach(b=>b.onclick=()=>openRoomInspection(b.dataset.inspectRoom));
+ $('inspSeg').innerHTML=segmented('inspStatusFilter',[{value:'active',label:'In progress',count:active.length+inspected.length},{value:'Completed',label:'Checked out',count:checkedOut.length},{value:'all',label:'All'}],sf,'inspection');
+ const tsk=n=>tasks.find(t=>t.room===n&&t.kind==='inspection');
+ const awaitingCard=card('Awaiting inspection','Housekeeping inspects these rooms before checkout can finish',
+   active.length?listOf(active.map(r=>{const s=r.stay,t=tsk(r.n);return listItem({lead:r.n,leadTone:'warning',title:`${esc(s.guest)} <span class="ref" style="margin-left:6px">${s.ref}</span>`,
+     sub:`Requested ${t?fmtTime(t.assignedAt):'by front desk'} · ${plural(s.adults+s.kids,'guest')} · deposit ${money(s.deposit||0)}${s.checkoutNote?` · “${esc(s.checkoutNote)}”`:''}`,
+     meta:chip('Inspection in progress','warning',{dot:true}),
+     actions:canInspect?`<button class="btn btn-primary btn-sm" data-inspect-room="${r.n}" type="button">${icon('clipboard','sm')}Start inspection</button>`:''});})):empty('No rooms are awaiting inspection.','Rooms appear here when the front desk starts a checkout.',{compact:true,ok:true}),
+   '',{flush:active.length>0,icon:'clipboard',count:active.length,attn:true});
+ const inspectedCard=card('Inspected — awaiting checkout','The front desk reviews findings and settles the deposit',
+   inspected.length?listOf(inspected.map(r=>{const s=r.stay,m=depositMath(s);return listItem({lead:r.n,leadTone:m.extra>0?'danger':'info',title:esc(s.guest),
+     sub:`Inspected by ${esc(s.inspBy||'Housekeeping')} · ${s.incidents.length?`${plural(s.incidents.length,'finding')} · ${money(m.damages)}`:'no issues found'}`,
+     meta:m.extra>0?chip('Damage payment pending','danger',{dot:true}):chip('Inspection completed','info',{dot:true}),
+     actions:can('checkin')?`<button class="btn btn-primary btn-sm" data-checkout-room="${r.n}" type="button">Finish checkout</button>`:''});})):empty('No completed inspections are waiting for checkout.','',{compact:true}),
+   '',{flush:inspected.length>0,icon:'check-circle',count:inspected.length});
+ const doneCard=card('Checked out','Inspection outcome and the room’s next step',
+   checkedOut.length?listOf(checkedOut.slice(0,12).map(r=>{const inc=incidents.filter(i=>i.booking===r.ref);const rm=rooms.find(x=>x.n===r.room);const next=rm?(rm.status==='available'?chip('Available','success',{dot:true}):rm.status==='cleaning'?chip('Awaiting cleaning','warning',{dot:true}):roomChip(rm.status)):'';return listItem({lead:r.room,title:esc(r.guest),sub:`${r.ref} · ${inc.length?`${plural(inc.length,'incident')} · ${money(inc.reduce((a,i)=>a+incidentCost(i),0))}`:'No issues found'}`,meta:next});})):empty('No completed checkouts yet.','Rooms appear here once the front desk completes checkout.',{compact:true}),
+   '',{flush:checkedOut.length>0,icon:'door-out',count:checkedOut.length});
+ $('inspectionGrid').innerHTML=`<div class="stack">${sf==='Completed'?doneCard:sf==='all'?awaitingCard+inspectedCard+doneCard:awaitingCard+inspectedCard}</div>`;
+ bindAll($('inspection'));
 }
 
 function openRoomInspection(roomNo){
  const r=rooms.find(x=>x.n===roomNo);if(!r||!r.stay)return;
+ if(!['housekeeper','supervisor'].includes(currentUser.role))return warn('Only housekeeping can carry out a checkout inspection.');
+ closeDrawer();
  const s=r.stay;
  $('roomInspectForm').dataset.room=roomNo;
  $('roomInspectTitle').textContent=`Inspect Room ${roomNo}`;
- $('roomInspectMeta').innerHTML=`<div class="insp-meta-grid">
-   <div><span>Room</span><strong>${roomNo} · ${r.type}</strong></div>
-   <div><span>Guest</span><strong>${esc(s.guest)}</strong></div>
-   <div><span>Booking</span><strong>${s.ref}</strong></div>
-   <div><span>Security deposit</span><strong>${money(s.deposit||0)}</strong></div>
- </div>`;
+ $('roomInspectMeta').innerHTML=`<div><span>Room</span><strong>${roomNo} · ${r.type}</strong></div><div><span>Guest</span><strong>${esc(s.guest)}</strong></div><div><span>Booking</span><strong>${s.ref}</strong></div><div><span>Security deposit</span><strong>${money(s.deposit||0)}</strong></div>`;
  $('roomInspectChecklist').innerHTML=CHECKOUT_INSPECT_CHECKS.map((c,i)=>`<label class="check-row"><input type="checkbox" class="ri-check" checked data-c="${i}"> ${c}</label>`).join('');
  inspectFindings=[];
  renderInspectFindings();
@@ -1173,19 +1731,19 @@ function openRoomInspection(roomNo){
 }
 function renderInspectFindings(){
  const box=$('inspectFindings');
- if(!inspectFindings.length){box.innerHTML=`<div class="no-findings" id="noFindings">No issues added yet — the room is marked <strong>No Issues Found</strong>.</div>`;updateDepositSettlement();return;}
- box.innerHTML=inspectFindings.map((f,i)=>`<div class="finding-row">
-   <div class="finding-head"><span class="badge ${f.category==='Damaged Item'?'high':f.category==='Missing Item'?'medium':'info'}">${f.category}</span><button type="button" class="icon-remove" data-remove-finding="${i}" title="Remove">×</button></div>
+ if(!inspectFindings.length){box.innerHTML=`<div class="no-findings" id="noFindings">${icon('check-circle','sm')}<span>No issues added yet — the room will be recorded as <strong>No issues found</strong>.</span></div>`;updateDepositSettlement();return;}
+ box.innerHTML=inspectFindings.map((f,i)=>`<div class="finding">
+   <div class="finding-head"><span class="fh-left">${chip(f.category,CAT_TONE[f.category],{dot:true})}Finding ${i+1}</span><button type="button" class="icon-btn plain" data-remove-finding="${i}" aria-label="Remove finding ${i+1}" title="Remove">${icon('x','sm')}</button></div>
    <div class="finding-grid">
      <label>Item / facility affected<input data-f-item="${i}" value="${esc(f.item)}" placeholder="${f.category==='Other Incident'?'Incident subject':'e.g. Bathroom mirror'}"></label>
      <label>Quantity<input type="number" min="1" data-f-qty="${i}" value="${f.qty}"></label>
-     <label>${f.category==='Missing Item'?'Cost per item':'Estimated cost'}<input type="number" min="0" step="50" data-f-cost="${i}" value="${f.cost}"></label>
-     <label class="photo-cell">Photos<div class="photo-upload" data-f-photo="${i}"><span>📷</span> ${f.photos?`${f.photos} attached`:'Add photo'}</div></label>
+     <label>${f.category==='Missing Item'?'Cost per item':'Estimated cost'}<div class="input-prefix"><span>₱</span><input type="number" min="0" step="50" data-f-cost="${i}" value="${f.cost}"></div></label>
+     <label class="photo-cell">Photos<button type="button" class="photo-upload" data-f-photo="${i}">${icon('camera','sm')} ${f.photos?`${f.photos} attached · add`:'Add photo'}</button></label>
      <label class="full">Description<textarea data-f-desc="${i}" placeholder="Describe the ${f.category.toLowerCase()}.">${esc(f.desc)}</textarea></label>
      <label class="full">Remarks<input data-f-remarks="${i}" value="${esc(f.remarks)}" placeholder="Optional remarks"></label>
    </div>
  </div>`).join('');
- box.querySelectorAll('[data-f-item]').forEach(el=>el.oninput=()=>{inspectFindings[+el.dataset.fItem].item=el.value;});
+ box.querySelectorAll('[data-f-item]').forEach(el=>el.oninput=()=>{inspectFindings[+el.dataset.fItem].item=el.value;el.setAttribute('aria-invalid','false');});
  box.querySelectorAll('[data-f-qty]').forEach(el=>el.oninput=()=>{inspectFindings[+el.dataset.fQty].qty=Math.max(1,+el.value||1);updateDepositSettlement();});
  box.querySelectorAll('[data-f-cost]').forEach(el=>el.oninput=()=>{inspectFindings[+el.dataset.fCost].cost=Math.max(0,+el.value||0);updateDepositSettlement();});
  box.querySelectorAll('[data-f-desc]').forEach(el=>el.oninput=()=>{inspectFindings[+el.dataset.fDesc].desc=el.value;});
@@ -1200,21 +1758,18 @@ function updateDepositSettlement(){
  const deposit=room?.stay?.deposit||0;
  const damages=inspectFindings.reduce((a,f)=>a+findingCost(f),0);
  const applied=Math.min(deposit,damages),refund=Math.max(0,deposit-damages),extra=Math.max(0,damages-deposit);
- $('depositSettlement').innerHTML=`<h4>Security deposit settlement</h4>
- <div class="deposit-box">
-   <div><span>Security deposit</span><strong>${money(deposit)}</strong></div>
-   <div><span>Total repair / replacement cost</span><strong>${money(damages)}</strong></div>
-   <div><span>Deducted from deposit</span><strong>${money(applied)}</strong></div>
-   <div class="dep-refund"><span>Remaining refundable deposit</span><strong class="ok-text">${money(refund)}</strong></div>
-   ${extra>0?`<div class="dep-extra"><span>Additional amount due from guest</span><strong class="warn-text">${money(extra)}</strong></div>`:''}
- </div>`;
+ $('depositSettlement').innerHTML=depositBlock({deposit,damages,applied,refund,extra},'Calculated from the findings above');
+ const n=inspectFindings.length;
+ $('roomInspectFootNote').innerHTML=n?`${plural(n,'finding')} · ${money(damages)}${extra>0?` · <span class="warn-text">booking moves to Pending Damage Payment</span>`:''}`:'No findings · full deposit refunded';
+ $('submitInspectionBtn').textContent=n?'Submit inspection':'Submit — no issues found';
 }
 function submitRoomInspection(){
  const roomNo=$('roomInspectForm').dataset.room;
  const room=rooms.find(x=>x.n===roomNo);if(!room||!room.stay)return;
  const s=room.stay;
  // Validate findings have an item name.
- if(inspectFindings.some(f=>!f.item.trim()))return showToast('Every finding needs an item or facility name.');
+ const missing=inspectFindings.map((f,i)=>!f.item.trim()?i:-1).filter(i=>i>-1);
+ if(missing.length){missing.forEach(i=>{const el=document.querySelector(`[data-f-item="${i}"]`);el&&el.setAttribute('aria-invalid','true');});document.querySelector(`[data-f-item="${missing[0]}"]`)?.focus();return warn('Every finding needs an item or facility name.');}
  const stamp=nowISO();
  s.incidents=[];
  inspectFindings.forEach(f=>{
@@ -1241,157 +1796,182 @@ function renderIncidents(){
  const sf=$('incidentStatusFilter').value,cf=$('incidentCategoryFilter').value;
  const list=incidents.filter(i=>(sf==='all'||i.status===sf)&&(cf==='all'||i.category===cf));
  const totalCost=incidents.reduce((a,i)=>a+incidentCost(i),0);
- $('incidentStats').innerHTML=statCards([
-   ['Total incidents',incidents.length,'all time'],
-   ['Pending settlement',incidents.filter(i=>i.status==='Pending').length,'awaiting payment',incidents.filter(i=>i.status==='Pending').length?'warn':''],
-   ['Damaged items',incidents.filter(i=>i.category==='Damaged Item').length,'reported'],
-   ['Recovered value',money(incidents.filter(i=>i.status==='Paid').reduce((a,i)=>a+incidentCost(i),0)),`of ${money(totalCost)} charged`]
+ const pending=incidents.filter(i=>i.status==='Pending');
+ $('incidentStats').innerHTML=statStrip([
+   {label:'Total incidents',value:incidents.length,sub:'all time'},
+   {label:'Pending settlement',value:pending.length,sub:money(pending.reduce((a,i)=>a+incidentCost(i),0))+' outstanding',attn:pending.length>0},
+   {label:'Damaged items',value:incidents.filter(i=>i.category==='Damaged Item').length,sub:`${incidents.filter(i=>i.category==='Missing Item').length} missing items`},
+   {label:'Recovered value',value:money(incidents.filter(i=>i.status==='Paid').reduce((a,i)=>a+incidentCost(i),0)),sub:`of ${money(totalCost)} charged`}
  ]);
- $('incidentTable').innerHTML=list.length?list.map(i=>`<tr>
-   <td><strong>${i.id}</strong><small>${fmtDT(i.date)}</small></td>
-   <td>${i.room}</td><td>${esc(i.guest)}</td>
-   <td><span class="badge ${i.category==='Damaged Item'?'high':i.category==='Missing Item'?'medium':'info'}">${i.category}</span></td>
-   <td>${esc(i.item)}</td><td>${i.qty}</td><td>${money(incidentCost(i))}</td>
-   <td><span class="badge ${i.status==='Paid'?'low':i.status==='Waived'?'':'medium'}">${i.status}</span></td>
-   <td><button class="mini-button" data-incident="${i.id}">View</button></td>
- </tr>`).join(''):`<tr><td colspan="9">${emptyState('No incidents match these filters.')}</td></tr>`;
- document.querySelectorAll('[data-incident]').forEach(b=>b.onclick=()=>showIncident(b.dataset.incident));
+ $('incidentSeg').innerHTML=segmented('incidentStatusFilter',[{value:'all',label:'All',count:incidents.length},...['Pending','Paid','Waived'].map(s=>({value:s,label:s,count:incidents.filter(i=>i.status===s).length}))],sf,'incidents');
+ $('incidentTable').innerHTML=list.length?list.map(i=>`<tr class="clickable" data-incident="${i.id}" data-rowclick tabindex="0" aria-label="Open incident ${i.id}">
+   <td class="primary-cell" data-label="Item"><span class="cell-main">${esc(i.item)}</span><small><span class="ref">${i.id}</span> · ${fmtDT(i.date)}</small></td>
+   <td data-label="Room"><strong>${i.room}</strong><small class="ref">${i.booking}</small></td>
+   <td data-label="Guest">${esc(i.guest)}</td>
+   <td data-label="Category">${chip(i.category,CAT_TONE[i.category],{dot:true})}</td>
+   <td class="num" data-label="Qty">${i.qty}</td>
+   <td class="num" data-label="Cost"><strong>${money(incidentCost(i))}</strong></td>
+   <td data-label="Status">${chip(i.status,INC_TONE[i.status],{dot:true})}</td>
+   <td class="actions" data-label=""><button class="btn btn-secondary btn-sm" data-incident="${i.id}" type="button">View</button></td>
+ </tr>`).join(''):`<tr><td colspan="8" class="table-empty">${empty('No incidents match these filters.','Incidents are raised during checkout inspections.',{icon:'search'})}</td></tr>`;
+ bindAll($('incidents'));
 }
 function showIncident(id){
  const i=incidents.find(x=>x.id===id);if(!i)return;
  const isFront=currentUser.role==='frontdesk'||currentUser.role==='manager';
- $('incidentTitle').textContent=`${i.id} · ${i.item}`;
- $('incidentBody').innerHTML=`<div class="detail-grid">
-   <div class="detail"><span>Incident ID</span><strong>${i.id}</strong></div>
-   <div class="detail"><span>Status</span><strong>${i.status}</strong></div>
-   <div class="detail"><span>Room</span><strong>${i.room}</strong></div>
-   <div class="detail"><span>Booking</span><strong>${i.booking}</strong></div>
-   <div class="detail"><span>Guest</span><strong>${esc(i.guest)}</strong></div>
-   <div class="detail"><span>Date</span><strong>${fmtDT(i.date)}</strong></div>
-   <div class="detail"><span>Reported by</span><strong>${esc(i.reportedBy)}</strong></div>
-   <div class="detail"><span>Category</span><strong>${i.category}</strong></div>
-   <div class="detail"><span>Item / facility</span><strong>${esc(i.item)}</strong></div>
-   <div class="detail"><span>Quantity</span><strong>${i.qty}</strong></div>
-   <div class="detail"><span>Cost estimate</span><strong>${money(incidentCost(i))}</strong></div>
-   <div class="detail"><span>Photos</span><strong>${i.photos?`${i.photos} attached`:'None'}</strong></div>
-   <div class="detail full"><span>Description</span><strong>${esc(i.description)||'—'}</strong></div>
-   <div class="detail full"><span>Remarks</span><strong>${esc(i.remarks)||'—'}</strong></div>
- </div>
- ${i.photos?`<div class="photo-strip">${Array.from({length:i.photos}).map(()=>'<div class="photo-thumb">📷</div>').join('')}</div>`:''}
- ${isFront&&i.status==='Pending'?`<div class="task-buttons"><button class="secondary-button" data-incident-waive="${i.id}">Waive charge</button><button class="primary-button" data-incident-paid="${i.id}">Mark as Paid</button></div>`:''}`;
- openBackdrop('incidentBackdrop');
- const waive=$('incidentBody').querySelector('[data-incident-waive]'),paid=$('incidentBody').querySelector('[data-incident-paid]');
- if(waive)waive.onclick=()=>{i.status='Waived';i.remarks=(i.remarks?i.remarks+' · ':'')+'Charge waived by front desk';closeBackdrop('incidentBackdrop');renderAll();showToast(`${i.id} waived.`);};
- if(paid)paid.onclick=()=>{i.status='Paid';closeBackdrop('incidentBackdrop');renderAll();showToast(`${i.id} marked as paid.`);};
+ const res=reservations.find(r=>r.ref===i.booking);
+ const body=`
+   <div class="pay-summary ${i.status==='Pending'?'due':i.status==='Paid'?'settled':''}" style="margin:0"><span>${i.category==='Missing Item'?`${i.qty} × ${money(i.cost)}`:'Estimated cost'}</span><strong>${money(incidentCost(i))}</strong></div>
+   <section class="drawer-section"><h3>${icon('file','sm')}Details</h3>${kv([
+     ['Room',i.room],['Booking',`<span class="ref">${i.booking}</span>`],['Guest',esc(i.guest)],['Date',fmtDT(i.date)],
+     ['Reported by',esc(i.reportedBy)],['Quantity',i.qty],['Description',esc(i.description)||'—','','full'],['Remarks',esc(i.remarks)||'—','','full']
+   ])}</section>
+   <section class="drawer-section"><h3>${icon('camera','sm')}Photos</h3>${i.photos?`<div class="photo-strip">${Array.from({length:i.photos}).map(()=>`<div class="photo-thumb">${icon('camera')}</div>`).join('')}</div><p class="field-hint" style="margin-top:8px">Photo placeholders — the prototype records how many photos were attached.</p>`:'<p class="text-3">No photos attached.</p>'}</section>
+   <div class="callout info">${icon('shield','sm')}<span>Raised during the checkout inspection of Room ${i.room}. Charges are deducted from the guest's security deposit at checkout; anything above the deposit is collected as a damage charge. ${res?`Booking status: <strong>${res.status}</strong>.`:''}</span></div>`;
+ const foot=[];
+ if(isFront&&i.status==='Pending')foot.push(`<button class="btn btn-secondary" id="incWaive" type="button">Waive charge</button><button class="btn btn-primary" id="incPaid" type="button">${icon('check','sm')}Mark as paid</button>`);
+ if(res&&can('reservations'))foot.unshift(`<button class="btn btn-ghost" data-view-res="${res.ref}" type="button">Open booking</button>`);
+ openDrawer({eyebrow:`${i.id} · Room ${i.room}`,title:i.item,meta:chip(i.category,CAT_TONE[i.category],{dot:true})+chip(i.status,INC_TONE[i.status],{dot:true}),body,foot:foot.join('')});
+ const waive=$('drawerFoot').querySelector('#incWaive'),paid=$('drawerFoot').querySelector('#incPaid');
+ if(waive)waive.onclick=async()=>{
+   const ok=await confirmDialog({title:`Waive ${money(incidentCost(i))}?`,body:`<p>The ${esc(i.item.toLowerCase())} charge for ${esc(i.guest)} will no longer be deducted from the deposit or billed at checkout.</p>`,confirmLabel:'Waive charge',danger:true});
+   if(!ok)return;
+   i.status='Waived';i.remarks=(i.remarks?i.remarks+' · ':'')+'Charge waived by front desk';
+   reevaluateDamageStatus(i);
+   closeDrawer();renderAll();showToast(`${i.id} waived.`);
+ };
+ if(paid)paid.onclick=()=>{i.status='Paid';closeDrawer();renderAll();showToast(`${i.id} marked as paid.`);};
+}
+// After a waiver, a booking held for damage payment is released if the
+// remaining (non-waived) findings now fit within the deposit.
+function reevaluateDamageStatus(inc){
+ const res=reservations.find(r=>r.ref===inc.booking);
+ const room=rooms.find(x=>x.n===inc.room&&x.stay&&x.stay.ref===inc.booking);
+ if(res&&room&&res.status==='Pending Damage Payment'&&depositMath(room.stay).extra===0)res.status='Inspection Completed';
 }
 
 /* ============================================================
    MAINTENANCE
    ============================================================ */
-function openIssueModal(){
- $('issueRoom').innerHTML=rooms.map(r=>`<option>Room ${r.n}</option>`).join('');
- $('issueDescription').value='';
+function openIssueModal(roomNo){
+ $('issueRoom').innerHTML=rooms.map(r=>`<option${roomNo&&r.n===roomNo?' selected':''}>Room ${r.n}</option>`).join('');
+ $('issueDescription').value='';clearValidation($('issueForm'));
+ closeDrawer();
  openBackdrop('issueModalBackdrop');
 }
 function openAssess(id){
  const t=tickets.find(x=>x.id===id);if(!t)return;
+ closeDrawer();
  $('assessTicketId').value=id;
  $('assessTitle').textContent=`Room ${t.room} · ${t.issue}`;
+ $('assessContext').innerHTML=kv([['Category',t.category],['Reported by',esc(t.reportedBy),fmtDT(t.reportedAt)],['Room status',ROOM_LABEL[rooms.find(r=>r.n===t.room)?.status]||'—',rooms.find(r=>r.n===t.room)?.stay?'Guest in room':'']]);
  $('assessTechnician').innerHTML=technicians.map(n=>`<option>${n}</option>`).join('');
  $('assessNotes').value='';
  openBackdrop('assessBackdrop');
 }
 function openTicketUpdate(id){
  const t=tickets.find(x=>x.id===id);if(!t)return;
+ closeDrawer();
  $('maintenanceTicketId').value=id;
  $('maintenanceUpdateTitle').textContent=`Room ${t.room} · ${t.issue}`;
  $('maintenanceStatus').value=TICKET_ACTIVE.includes(t.status)?t.status:'Accepted';
  $('maintenanceEta').value=t.eta||isoLocal(new Date(Date.now()+864e5));
  $('maintenanceParts').value=t.parts||'';
- $('maintenanceNotes').value='';
+ $('maintenanceNotes').value='';clearValidation($('maintenanceUpdateForm'));
+ const r=rooms.find(x=>x.n===t.room);
+ $('maintenanceAvailHint').textContent=r&&r.stay?`Room ${t.room} has a guest in it, so its availability won't change.`:`Room ${t.room} is currently ${ROOM_LABEL[r?.status]||'—'}. Availability only changes rooms with no guest in them.`;
  openBackdrop('maintenanceUpdateBackdrop');
+}
+function ticketCard(t){
+ const step=TICKET_ACTIVE.indexOf(t.status);
+ const late=t.eta&&t.stage!=='resolved'&&new Date(t.eta)<new Date();
+ const mine=t.assignedTo===currentUser.name;
+ const actions=[];
+ if(currentUser.role==='supervisor'&&t.stage==='assessment')actions.push(`<button class="btn btn-primary btn-sm" data-assess="${t.id}" type="button">Assess</button>`);
+ if(currentUser.role==='maintenance'&&t.stage==='assigned')actions.push(`<button class="btn btn-primary btn-sm" data-ticket="${t.id}" type="button">${icon('edit','sm')}Update</button>`);
+ actions.push(`<button class="btn btn-secondary btn-sm" data-ticket-log="${t.id}" type="button">${icon('history','sm')}History</button>`);
+ return `<article class="wo${t.priority==='High'&&t.stage!=='resolved'?' urgent':''}">
+   <span class="li-lead${t.stage==='resolved'?' tone-success':t.priority==='High'?' tone-danger':''}">${t.room}</span>
+   <div style="min-width:0">
+     <div class="wo-title">${esc(t.issue)}</div>
+     <p class="wo-sub">${t.category} · reported by ${esc(t.reportedBy)} on ${fmtDT(t.reportedAt)}</p>
+     <div class="wo-tags">
+       ${prioTag(t.priority)}
+       ${chip(t.status,ticketTone(t),{dot:true})}
+       ${t.assignedTo?`<span>${icon('user','sm')}${mine?'<strong>You</strong>':esc(t.assignedTo)}</span>`:''}
+       ${t.eta?`<span class="${late?'warn-text':''}">${icon('clock','sm')}${t.stage==='resolved'?'Resolved '+fmtDT(t.resolvedAt):'ETA '+fmtDT(t.eta)}${late?' · past ETA':''}</span>`:''}
+       ${t.parts?`<span>${icon('box','sm')}${esc(t.parts)}</span>`:''}
+     </div>
+     ${t.impact&&t.stage!=='resolved'?`<p class="wo-impact">${icon(t.impact==='Room must be taken offline'?'alert':'info','sm')}${t.impact}</p>`:''}
+     ${t.stage==='assigned'?`<div class="wo-progress" aria-label="Repair stage ${step+1} of ${TICKET_ACTIVE.length}">${TICKET_ACTIVE.map((s,i)=>`<i class="${i<step?'on':i===step?'cur':''}" title="${s}"></i>`).join('')}</div>`:''}
+   </div>
+   <div class="wo-actions">${actions.join('')}</div>
+ </article>`;
 }
 function renderTickets(){
  const cats=[...new Set(tickets.map(t=>t.category))];
- if($('ticketCategoryFilter').options.length!==cats.length+1)
+ if($('ticketCategoryFilter').options.length!==cats.length+1){
+   const keep=$('ticketCategoryFilter').value;
    $('ticketCategoryFilter').innerHTML='<option value="all">All categories</option>'+cats.map(c=>`<option>${c}</option>`).join('');
- const sf=$('ticketStatusFilter').value,pf=$('ticketPriorityFilter').value,cf=$('ticketCategoryFilter').value;
- const isSup=currentUser.role==='supervisor';
- setPageSubtitle('maintenance',isSup?'Assess reported issues, then forward them to a technician.':'Work orders assessed by the supervisor and assigned to technicians.');
-
- $('maintenanceStats').innerHTML=statCards([
-   ['Awaiting assessment',tickets.filter(t=>t.stage==='assessment').length,'with the supervisor',tickets.filter(t=>t.stage==='assessment').length&&isSup?'warn':''],
-   ['Active work orders',tickets.filter(t=>t.stage==='assigned').length,'being worked on'],
-   ['High priority',tickets.filter(t=>t.stage!=='resolved'&&t.priority==='High').length,'urgent repairs'],
-   ['Resolved',tickets.filter(t=>t.stage==='resolved').length,'all time']
- ]);
-
+   $('ticketCategoryFilter').value=cats.includes(keep)?keep:'all';
+ }
+ let sf=$('ticketStatusFilter').value;const pf=$('ticketPriorityFilter').value,cf=$('ticketCategoryFilter').value;
+ const isSup=currentUser.role==='supervisor',isTech=currentUser.role==='maintenance';
+ if(isTech&&sf==='open'){sf='all';$('ticketStatusFilter').value='all';}
+ setPageSubtitle('maintenance',isSup?'Assess reported issues, then forward them to a technician.':isTech?'Work orders forwarded to maintenance by the housekeeping supervisor.':'Work orders assessed by the supervisor and assigned to technicians.');
+ const assessN=tickets.filter(t=>t.stage==='assessment').length;
+ $('maintenanceStats').innerHTML=statStrip([
+   !isTech&&{label:'Awaiting assessment',value:assessN,sub:'with the supervisor',attn:assessN>0&&isSup},
+   {label:'Active work orders',value:tickets.filter(t=>t.stage==='assigned').length,sub:'being worked on'},
+   {label:'High priority',value:tickets.filter(t=>t.stage!=='resolved'&&t.priority==='High').length,sub:'urgent repairs',attn:tickets.some(t=>t.stage!=='resolved'&&t.priority==='High')},
+   {label:'Waiting for parts',value:tickets.filter(t=>t.status==='Waiting for parts').length,sub:'blocked'},
+   {label:'Resolved',value:tickets.filter(t=>t.stage==='resolved').length,sub:'all time'}
+ ].filter(Boolean));
  // Supervisor assessment queue
  const assess=tickets.filter(t=>t.stage==='assessment');
- $('assessmentQueue').innerHTML=(isSup&&assess.length)?panel('Awaiting Your Assessment','Set priority and room impact before forwarding to maintenance',
-   `<div class="list-rows">${assess.map(t=>`<div class="list-row"><div class="lr-main"><strong>Room ${t.room} · ${esc(t.issue)}</strong><p>${t.category} · reported by ${esc(t.reportedBy)} · ${fmtDT(t.reportedAt)}</p></div><button class="mini-button primary" data-assess="${t.id}">Assess</button></div>`).join('')}</div>`):'';
-
+ $('assessmentQueue').innerHTML=(isSup&&assess.length)?`<div style="margin-bottom:16px">${card('Awaiting your assessment','Set priority and room impact before forwarding to maintenance',
+   listOf(assess.map(t=>listItem({lead:t.room,leadTone:'warning',title:esc(t.issue),sub:`${t.category} · reported by ${esc(t.reportedBy)} · ${fmtDT(t.reportedAt)}`,actions:`<button class="btn btn-primary btn-sm" data-assess="${t.id}" type="button">Assess</button>`}))),'',{flush:true,icon:'alert-circle',count:assess.length,attn:true})}</div>`:'';
+ const segOpts=[{value:'all',label:'All open',count:isTech?tickets.filter(t=>t.stage==='assigned').length:openTickets().length}];
+ if(!isTech)segOpts.push({value:'open',label:'Awaiting assessment',count:assessN});
+ segOpts.push({value:'active',label:'In progress',count:tickets.filter(t=>t.stage==='assigned').length},{value:'Resolved',label:'Resolved',count:tickets.filter(t=>t.stage==='resolved').length});
+ $('ticketSeg').innerHTML=segmented('ticketStatusFilter',segOpts,sf,'maintenance');
  // Main queue — maintenance staff only see forwarded work orders
  let list=tickets.filter(t=>t.stage!=='resolved');
- if(currentUser.role==='maintenance')list=list.filter(t=>t.stage==='assigned');
+ if(isTech)list=list.filter(t=>t.stage==='assigned');
  if(sf==='open')list=list.filter(t=>t.stage==='assessment');
  else if(sf==='active')list=list.filter(t=>t.stage==='assigned');
  else if(sf==='Resolved')list=tickets.filter(t=>t.stage==='resolved');
  if(pf!=='all')list=list.filter(t=>t.priority===pf);
  if(cf!=='all')list=list.filter(t=>t.category===cf);
  list=[...list].sort(pri);
-
- $('ticketList').innerHTML=list.map(t=>`<article class="ticket-card ${t.priority==='High'?'urgent':''}">
-   <div class="ticket-icon">⚒</div>
-   <div class="tk-main">
-     <h4>Room ${t.room} · ${esc(t.issue)}</h4>
-     <p>${t.category} · reported by ${esc(t.reportedBy)} on ${fmtDT(t.reportedAt)}</p>
-     <div class="tk-tags">
-       ${t.priority?`<span class="badge ${priClass(t.priority)}">${t.priority} priority</span>`:'<span class="badge">Not yet assessed</span>'}
-       <span class="stage-pill">${t.status}</span>
-       ${t.assignedTo?`<span class="tk-assign">👤 ${t.assignedTo}</span>`:''}
-       ${t.eta?`<span class="tk-eta">⏱ ETA ${fmtDT(t.eta)}</span>`:''}
-     </div>
-     ${t.impact?`<p class="tk-impact">${t.impact}</p>`:''}
-   </div>
-   <div class="tk-actions">
-     ${currentUser.role==='supervisor'&&t.stage==='assessment'?`<button class="mini-button primary" data-assess="${t.id}">Assess</button>`:''}
-     ${currentUser.role==='maintenance'&&t.stage==='assigned'?`<button class="mini-button primary" data-ticket="${t.id}">Update</button>`:''}
-     <button class="mini-button" data-ticket-log="${t.id}">History</button>
-   </div>
- </article>`).join('')||emptyState('No work orders match these filters.','Resolved tickets appear under the Resolved status filter.');
-
+ $('ticketList').innerHTML=list.map(ticketCard).join('')||`<div class="card">${empty('No work orders match these filters.','Resolved work orders are under the Resolved filter.',{icon:'tool'})}</div>`;
  // Repair history
  const resolved=tickets.filter(t=>t.stage==='resolved');
- $('repairHistoryPanel').innerHTML=`<div class="panel-header"><div><h3>Repair History</h3><p>Completed work orders and the parts used</p></div></div>`+
-  (resolved.length?`<div class="table-responsive"><table><thead><tr><th>Room</th><th>Issue</th><th>Category</th><th>Technician</th><th>Parts</th><th>Resolved</th></tr></thead><tbody>${resolved.map(t=>`<tr><td><strong>${t.room}</strong></td><td>${esc(t.issue)}</td><td>${t.category}</td><td>${esc(t.assignedTo)}</td><td>${esc(t.parts)||'—'}</td><td>${fmtDT(t.resolvedAt)}</td></tr>`).join('')}</tbody></table></div>`:emptyState('No completed repairs yet.'));
- bindTicketActions();
+ $('repairHistoryPanel').innerHTML=`<div class="card-head"><div><div class="card-title">${icon('history','sm')}Repair history</div><p class="card-sub">Completed work orders and the parts used</p></div></div>`+
+  (resolved.length?`<div class="table-wrap"><table class="data responsive"><thead><tr><th>Room</th><th>Issue</th><th>Category</th><th>Technician</th><th>Parts</th><th>Resolved</th></tr></thead><tbody>${resolved.map(t=>`<tr class="clickable" data-ticket-log="${t.id}" data-rowclick tabindex="0"><td data-label="Room"><strong>${t.room}</strong></td><td class="primary-cell" data-label="Issue"><span class="cell-main">${esc(t.issue)}</span></td><td data-label="Category">${t.category}</td><td data-label="Technician">${esc(t.assignedTo)}</td><td data-label="Parts">${esc(t.parts)||'—'}</td><td data-label="Resolved">${fmtDT(t.resolvedAt)}</td></tr>`).join('')}</tbody></table></div>`:`<div class="card-body">${empty('No completed repairs yet.','',{compact:true})}</div>`);
+ bindAll($('maintenance'));
 }
-function bindTicketActions(){
- document.querySelectorAll('[data-ticket]').forEach(b=>b.onclick=()=>openTicketUpdate(+b.dataset.ticket));
- document.querySelectorAll('[data-assess]').forEach(b=>b.onclick=()=>openAssess(+b.dataset.assess));
- document.querySelectorAll('[data-ticket-log]').forEach(b=>b.onclick=()=>showTicketLog(+b.dataset.ticketLog));
-}
+function bindTicketActions(){bindAll();}
 function showTicketLog(id){
  const t=tickets.find(x=>x.id===id);if(!t)return;
- $('modalTitle').textContent=`Room ${t.room} · Work Order Log`;
- $('modalContent').innerHTML=`<div class="detail-grid">
-   <div class="detail"><span>Issue</span><strong>${esc(t.issue)}</strong><small>${t.category}</small></div>
-   <div class="detail"><span>Status</span><strong>${t.status}</strong><small>${t.priority||'Not assessed'}</small></div>
-   <div class="detail"><span>Assigned to</span><strong>${esc(t.assignedTo)||'Unassigned'}</strong></div>
-   <div class="detail"><span>Estimated completion</span><strong>${t.eta?fmtDT(t.eta):'—'}</strong></div>
-   <div class="detail"><span>Parts used</span><strong>${esc(t.parts)||'None recorded'}</strong></div>
-   <div class="detail"><span>Room impact</span><strong>${t.impact||'—'}</strong></div>
- </div>
- <h4 class="log-title">Activity log</h4>
- <div class="timeline-log">${t.history.map(h=>`<div class="tl-item"><span class="tl-dot"></span><div><strong>${esc(h.what)}</strong><small>${esc(h.who)} · ${fmtDT(h.when)}</small></div></div>`).join('')}</div>`;
- openBackdrop('modalBackdrop');
+ const foot=[];
+ if(currentUser.role==='supervisor'&&t.stage==='assessment')foot.push(`<button class="btn btn-primary" data-assess="${t.id}" type="button">Assess &amp; forward</button>`);
+ if(currentUser.role==='maintenance'&&t.stage==='assigned')foot.push(`<button class="btn btn-primary" data-ticket="${t.id}" type="button">${icon('edit','sm')}Update progress</button>`);
+ openDrawer({eyebrow:`Work order · Room ${t.room}`,title:t.issue,meta:prioTag(t.priority)+chip(t.status,ticketTone(t),{dot:true}),
+   body:`<section class="drawer-section"><h3>${icon('file','sm')}Details</h3>${kv([
+     ['Category',t.category],['Room impact',t.impact||'Not assessed yet'],
+     ['Assigned to',esc(t.assignedTo)||'Unassigned'],['Estimated completion',t.eta?fmtDT(t.eta):'—'],
+     ['Parts used',esc(t.parts)||'None recorded'],['Reported',`${esc(t.reportedBy)}`,fmtDT(t.reportedAt)]
+   ])}</section>
+   <section class="drawer-section"><h3>${icon('history','sm')}Activity log</h3><div class="timeline">${t.history.map((h,i)=>`<div class="tl-item ${i===t.history.length-1&&t.stage==='resolved'?'done':''}"><span class="tl-dot"></span><div class="tl-body"><strong>${esc(h.what)}</strong><small>${esc(h.who)} · ${fmtDT(h.when)}</small></div></div>`).join('')}</div></section>`,
+   foot:foot.join('')});
 }
 function showRoomLogs(){
- $('modalTitle').textContent='Room Maintenance Logs';
+ $('modalTitle').textContent='Room maintenance logs';
+ $('modalDesc').textContent='Every work order, grouped by room.';$('modalDesc').classList.remove('hidden');
  const byRoom={};
  tickets.forEach(t=>{(byRoom[t.room]=byRoom[t.room]||[]).push(t);});
- $('modalContent').innerHTML=Object.keys(byRoom).sort().map(r=>`<div class="room-log"><h4>Room ${r} <span>${byRoom[r].length} record${byRoom[r].length>1?'s':''}</span></h4>${byRoom[r].map(t=>`<div class="room-log-row"><div><strong>${esc(t.issue)}</strong><small>${t.category} · ${t.status}</small></div><small>${fmtDT(t.reportedAt)}</small></div>`).join('')}</div>`).join('');
+ $('modalContent').innerHTML=`<div class="stack">${Object.keys(byRoom).sort().map(r=>card(`Room ${r}`,'',listOf(byRoom[r].map(t=>listItem({title:esc(t.issue),sub:`${t.category} · ${fmtDT(t.reportedAt)}`,meta:chip(t.status,ticketTone(t),{dot:true})}))),'',{flush:true,count:byRoom[r].length})).join('')}</div>`;
  openBackdrop('modalBackdrop');
 }
 
@@ -1401,10 +1981,10 @@ function showRoomLogs(){
 let requestItems=[{name:'Extra pillow',qty:1,price:0,custom:''}];
 function renderRequestItems(){
  $('requestItems').innerHTML=requestItems.map((r,i)=>`<div class="request-item-row">
-   <select data-r-item="${i}">${REQUEST_CATALOG.map(c=>`<option value="${c.name}" data-price="${c.price}" ${r.name===c.name?'selected':''}>${c.name}${c.price?` · ${money(c.price)}`:''}</option>`).join('')}</select>
-   <input type="number" min="1" value="${r.qty}" data-r-qty="${i}">
-   <button type="button" class="icon-remove" data-r-remove="${i}" title="Remove">×</button>
-   ${r.name==='Other'?`<input class="custom-item full-row" placeholder="Describe the requested item" value="${esc(r.custom)}" data-r-custom="${i}"><input class="custom-price" type="number" min="0" step="10" value="${r.price}" data-r-price="${i}" title="Charge">`:''}
+   <select data-r-item="${i}" aria-label="Item ${i+1}">${REQUEST_CATALOG.map(c=>`<option value="${c.name}" data-price="${c.price}" ${r.name===c.name?'selected':''}>${c.name}${c.price?` · ${money(c.price)}`:''}</option>`).join('')}</select>
+   <input type="number" min="1" value="${r.qty}" data-r-qty="${i}" aria-label="Quantity for item ${i+1}">
+   <button type="button" class="icon-remove" data-r-remove="${i}" aria-label="Remove item ${i+1}" title="Remove">${icon('x','sm')}</button>
+   ${r.name==='Other'?`<input class="custom-item" placeholder="Describe the requested item" value="${esc(r.custom)}" data-r-custom="${i}" aria-label="Describe custom item"><div class="input-prefix custom-price"><span>₱</span><input type="number" min="0" step="10" value="${r.price}" data-r-price="${i}" aria-label="Charge for custom item" title="Charge"></div>`:''}
  </div>`).join('');
  document.querySelectorAll('[data-r-item]').forEach(s=>s.onchange=()=>{
    const i=+s.dataset.rItem;requestItems[i].name=s.value;
@@ -1412,10 +1992,10 @@ function renderRequestItems(){
    renderRequestItems();
  });
  document.querySelectorAll('[data-r-qty]').forEach(q=>q.oninput=()=>{requestItems[+q.dataset.rQty].qty=Math.max(1,+q.value||1);updateCharge();});
- document.querySelectorAll('[data-r-custom]').forEach(c=>c.oninput=()=>{requestItems[+c.dataset.rCustom].custom=c.value;});
+ document.querySelectorAll('[data-r-custom]').forEach(c=>c.oninput=()=>{requestItems[+c.dataset.rCustom].custom=c.value;c.setAttribute('aria-invalid','false');});
  document.querySelectorAll('[data-r-price]').forEach(p=>p.oninput=()=>{requestItems[+p.dataset.rPrice].price=+p.value||0;updateCharge();});
  document.querySelectorAll('[data-r-remove]').forEach(b=>b.onclick=()=>{
-   if(requestItems.length===1)return showToast('A request needs at least one item.');
+   if(requestItems.length===1)return warn('A request needs at least one item.');
    requestItems.splice(+b.dataset.rRemove,1);renderRequestItems();
  });
  updateCharge();
@@ -1423,19 +2003,22 @@ function renderRequestItems(){
 const updateCharge=()=>$('chargePreview').textContent=money(requestItems.reduce((a,r)=>a+r.price*r.qty,0));
 function renderRequests(){
  const occ=rooms.filter(r=>r.stay);
- $('requestRoom').innerHTML=occ.map(r=>`<option value="${r.n}">Room ${r.n}</option>`).join('')||'<option value="">No in-house guests</option>';
+ const prev=$('requestRoom').value;
+ $('requestRoom').innerHTML=occ.map(r=>`<option value="${r.n}">Room ${r.n} · ${r.stay.guest}</option>`).join('')||'<option value="">No in-house guests</option>';
+ if(occ.some(r=>r.n===prev))$('requestRoom').value=prev;
  syncRequestGuest();
- $('activeRequests').innerHTML=guestRequests.length?guestRequests.map(r=>`<div class="request-row">
-   <span class="badge ${r.status==='Pending'?'medium':r.status==='Delivered'?'low':'info'}">${r.status}</span>
-   <div><strong>${r.items.map(i=>`${esc(i.name)} ×${i.qty}`).join(', ')}</strong><p>Room ${r.room} · ${esc(r.guest)} · logged by ${esc(r.by)}</p></div>
-   <div class="rq-side"><span>${r.items.reduce((a,i)=>a+i.price*i.qty,0)?money(r.items.reduce((a,i)=>a+i.price*i.qty,0)):'Free'}</span>
-   ${r.status!=='Delivered'&&['housekeeper','supervisor','frontdesk'].includes(currentUser.role)?`<button class="mini-button" data-req-advance="${r.id}">${r.status==='Pending'?'Start':'Mark delivered'}</button>`:''}</div>
- </div>`).join(''):emptyState('No guest requests logged yet.');
- document.querySelectorAll('[data-req-advance]').forEach(b=>b.onclick=()=>{
-   const r=guestRequests.find(x=>x.id===+b.dataset.reqAdvance);
-   r.status=r.status==='Pending'?'In delivery':'Delivered';
-   renderAll();showToast(`Request for Room ${r.room} marked ${r.status.toLowerCase()}.`);
- });
+ const sf=$('requestStatusFilter').value;
+ const canAdvance=['housekeeper','supervisor','frontdesk'].includes(currentUser.role);
+ $('requestSeg').innerHTML=segmented('requestStatusFilter',[{value:'open',label:'Open',count:guestRequests.filter(r=>r.status!=='Delivered').length},{value:'Delivered',label:'Delivered',count:guestRequests.filter(r=>r.status==='Delivered').length},{value:'all',label:'All'}],sf,'requests');
+ const shown=guestRequests.filter(r=>sf==='all'||(sf==='open'?r.status!=='Delivered':r.status===sf));
+ $('activeRequests').innerHTML=shown.length?shown.map(r=>{const charge=r.items.reduce((a,i)=>a+i.price*i.qty,0);return listItem({lead:r.room,
+   title:`<span class="req-items">${r.items.map(i=>`${esc(i.name)} ×${i.qty}`).join(', ')}</span>`,
+   sub:`${esc(r.guest)} · logged by ${esc(r.by)} · ${fmtDT(r.createdAt)}${r.notes?` · “${esc(r.notes)}”`:''}`,
+   meta:`${chip(r.status,REQ_TONE[r.status],{dot:true})}<small>${charge?money(charge)+' to room':'Free'}</small>`,
+   actions:r.status!=='Delivered'&&canAdvance?`<button class="btn ${r.status==='Pending'?'btn-secondary':'btn-primary'} btn-sm" data-req-advance="${r.id}" type="button">${r.status==='Pending'?'Start delivery':'Mark delivered'}</button>`:''});}).join(''):`<div class="card-body">${empty(sf==='open'?'No open requests.':'No requests to show.',sf==='open'?'Everything requested has been delivered.':'',{compact:true,ok:sf==='open'})}</div>`;
+ const noGuests=!occ.length;
+ $('requestForm').querySelectorAll('button,select,textarea,input:not([readonly])').forEach(el=>el.disabled=noGuests);
+ bindAll($('requests'));
 }
 function syncRequestGuest(){
  const r=rooms.find(x=>x.n===$('requestRoom').value);
@@ -1445,38 +2028,50 @@ function syncRequestGuest(){
 /* ============================================================
    LOST & FOUND
    ============================================================ */
+const LF_ICON={'Electronics':'phone','Documents':'file','Jewelry / Accessories':'clock','Clothing':'tag','Bag / Wallet':'briefcase','Keys':'key','Other':'box'};
 function renderLostFound(){
  const q=($('lostSearch').value||'').toLowerCase(),sf=$('lostStatusFilter').value;
- const list=lostItems.filter(x=>(`${x.item} ${x.location} ${x.reporter}`.toLowerCase().includes(q))&&(sf==='all'||x.status===sf));
- $('lostFoundGrid').innerHTML=list.map(x=>`<article class="item-card">
-   <div class="lf-head"><h4>${esc(x.item)}</h4><span class="badge ${x.status==='Stored'?'low':x.status==='Released'?'':'medium'}">${x.status}</span></div>
-   <p>${esc(x.category)}</p>
-   <div class="lf-meta"><span>⌖ ${esc(x.location)}</span><span>◷ ${fmtDT(x.when)}</span><span>👤 ${esc(x.reporter)}</span></div>
-   <div class="reporter-summary"><span>Stored at</span><strong>Front Desk Lost &amp; Found Cabinet</strong></div>
-   <footer>
-     <button class="mini-button" data-lf-view="${x.id}">Details</button>
-     ${currentUser.role==='frontdesk'&&x.status!=='Released'?`<button class="mini-button primary" data-release="${x.id}">Verify &amp; Release</button>`:''}
-   </footer>
- </article>`).join('')||emptyState('No items match your search.');
- document.querySelectorAll('[data-release]').forEach(b=>b.onclick=()=>{
-   const x=lostItems.find(i=>i.id===+b.dataset.release);x.status='Released';
-   renderLostFound();showToast(`${x.item} released to its owner and logged.`);
- });
- document.querySelectorAll('[data-lf-view]').forEach(b=>b.onclick=()=>{
-   const x=lostItems.find(i=>i.id===+b.dataset.lfView);
-   $('modalTitle').textContent=x.item;
-   $('modalContent').innerHTML=`<div class="detail-grid">
-     <div class="detail"><span>Category</span><strong>${esc(x.category)}</strong></div>
-     <div class="detail"><span>Status</span><strong>${x.status}</strong></div>
-     <div class="detail"><span>Found at</span><strong>${esc(x.location)}</strong></div>
-     <div class="detail"><span>Date found</span><strong>${fmtDT(x.when)}</strong></div>
-     <div class="detail"><span>Condition</span><strong>${esc(x.condition)}</strong></div>
-     <div class="detail"><span>Reported by</span><strong>${esc(x.reporter)}</strong></div>
-     <div class="detail full"><span>Description</span><strong>${esc(x.description)}</strong></div>
+ $('lostSeg').innerHTML=segmented('lostStatusFilter',[{value:'all',label:'All',count:lostItems.length},...['Stored','Claim pending','Released'].map(s=>({value:s,label:s,count:lostItems.filter(x=>x.status===s).length}))],sf,'lostfound');
+ const list=lostItems.filter(x=>(`${x.item} ${x.location} ${x.reporter} ${x.category}`.toLowerCase().includes(q))&&(sf==='all'||x.status===sf));
+ const canRelease=currentUser.role==='frontdesk';
+ $('lostFoundGrid').innerHTML=list.map(x=>`<article class="lf-card">
+   <div class="lf-thumb">${chip(x.status,LF_TONE[x.status],{dot:true})}${icon(LF_ICON[x.category]==='key'?'tag':(LF_ICON[x.category]||'box'))}</div>
+   <div class="lf-body">
+     <div><h3>${esc(x.item)}</h3><p class="text-3" style="font-size:var(--fs-sm)">${esc(x.category)} · ${esc(x.condition)}</p></div>
+     <div class="lf-meta"><span>${icon('pin','sm')}<span class="truncate">Found in ${esc(x.location)}</span></span><span>${icon('clock','sm')}${fmtDT(x.when)}</span><span>${icon('user','sm')}Logged by ${esc(x.reporter)}</span></div>
    </div>
-   ${currentUser.role!=='frontdesk'?'<div class="notice">Only the front desk can verify and release an item to a guest.</div>':''}`;
-   openBackdrop('modalBackdrop');
- });
+   <div class="lf-foot">
+     <button class="btn btn-secondary btn-sm" data-lf-view="${x.id}" type="button">Details</button>
+     ${canRelease&&x.status!=='Released'?`<button class="btn btn-primary btn-sm" data-release="${x.id}" type="button">${icon('shield','sm')}Verify &amp; release</button>`:''}
+   </div>
+ </article>`).join('')||`<div class="card" style="grid-column:1/-1">${empty(q?'No items match your search.':'No items in this status.',q?'Search by item, location or the staff member who logged it.':'',{icon:'briefcase'})}</div>`;
+ bindAll($('lostfound'));
+}
+function showLostItem(id){
+ const x=lostItems.find(i=>i.id===id);if(!x)return;
+ const canRelease=currentUser.role==='frontdesk'&&x.status!=='Released';
+ openDrawer({eyebrow:`Lost & found · ${x.category}`,title:x.item,meta:chip(x.status,LF_TONE[x.status],{dot:true}),
+   body:`<section class="drawer-section"><h3>${icon('file','sm')}Record</h3>${kv([
+     ['Found at',esc(x.location)],['Date found',fmtDT(x.when)],['Condition',esc(x.condition)],['Logged by',esc(x.reporter)],
+     ['Stored at','Front Desk Lost &amp; Found Cabinet','','full'],['Description',esc(x.description),'','full']
+   ])}</section>
+   ${x.status==='Released'&&x.releasedBy?`<section class="drawer-section"><h3>${icon('shield','sm')}Release</h3>${kv([['Released to',esc(x.releasedTo||'Owner')],['Released by',esc(x.releasedBy),x.releasedAt?fmtDT(x.releasedAt):'']])}</section>`:''}
+   ${currentUser.role!=='frontdesk'?`<div class="callout info">${icon('info','sm')}<span>Only the front desk can verify ownership and release an item to a guest.</span></div>`:''}`,
+   foot:canRelease?`<button class="btn btn-primary" data-release="${x.id}" type="button">${icon('shield','sm')}Verify &amp; release</button>`:''});
+}
+// Release is consequential and front-desk only, so it asks for confirmation.
+async function releaseLostItem(id){
+ const x=lostItems.find(i=>i.id===id);if(!x)return;
+ if(currentUser.role!=='frontdesk')return warn('Only the front desk can verify and release an item.');
+ const ok=await confirmDialog({title:`Release ${x.item}?`,
+   body:`<p>Confirm you have checked the claimant's identity and that they described the item correctly.</p>${rows([['Item',esc(x.item)],['Found',`${esc(x.location)} · ${fmtDT(x.when)}`]])}
+   <label class="field mt-4"><span class="field-label">Claimant name <span class="field-hint">Optional, kept on the record</span></span><input id="releaseClaimant" placeholder="Full name"></label>
+   <label class="check-row mt-4"><input type="checkbox" id="releaseVerified"> Ownership verified</label>`,
+   confirmLabel:'Release item',focus:'releaseClaimant',
+   validate:()=>{if(!$('releaseVerified').checked){warn('Tick “Ownership verified” to release the item.');$('releaseVerified').focus();return false;}return true;}});
+ if(!ok)return;
+ x.status='Released';x.releasedTo=($('releaseClaimant').value||'').trim();x.releasedBy=currentUser.name;x.releasedAt=nowISO();
+ closeDrawer();renderLostFound();renderNavBadges();showToast(`${x.item} released to its owner and logged.`);
 }
 
 /* ============================================================
@@ -1488,45 +2083,58 @@ function renderInventory(){
   ?'Add items, record stock movements, and keep levels above the reorder point.'
   :'View-only. Ask your supervisor to record a stock movement, or send a restock request.');
  document.querySelectorAll('.inventory-manage').forEach(e=>e.style.display=canEdit?'':'none');
- $('inventoryStats').innerHTML=statCards([
-   ['Tracked items',inventory.length,'in the store room'],
-   ['Low stock',lowStock().length,'at or below reorder',lowStock().length?'warn':''],
-   ['Movements logged',inventoryLog.length,'recent activity'],
-   ['Restock requests',restockRequests.filter(r=>r.status==='Open').length,'from housekeepers']
- ]);
- $('inventoryTable').innerHTML=inventory.map((x,i)=>{
-   const low=x.stock<=x.reorder;
-   return `<tr class="${low?'row-warn':''}">
-     <td><strong>${esc(x.item)}</strong></td><td>${esc(x.category)}</td>
-     <td><strong>${x.stock}</strong></td><td>${x.reorder}</td>
-     <td><span class="badge ${low?'high':'low'}">${low?'Low':'Good'}</span></td>
-     <td>${fmtDT(x.lastUpdated)}<small>by ${esc(x.lastBy)}</small></td>
-     <td class="inv-action-cell">${canEdit?`<button class="mini-button" data-stock="${i}">Update</button>`:'<span class="muted-text">View only</span>'}</td>
-   </tr>`;
- }).join('');
- document.querySelectorAll('[data-stock]').forEach(b=>b.onclick=()=>openStockModal(+b.dataset.stock));
+ const f=$('inventoryFilter').value,q=($('inventorySearch').value||'').trim().toLowerCase();
  const open=restockRequests.filter(r=>r.status==='Open');
- $('restockRequestPanel').innerHTML=open.length?panel('Restock Requests','Raised by housekeepers on the floor',
-   `<div class="list-rows">${open.map(r=>`<div class="list-row"><div class="lr-main"><strong>${esc(r.item)}</strong><p>Requested by ${esc(r.by)} · ${fmtDT(r.when)}</p></div>${canEdit?`<button class="mini-button primary" data-fulfil="${r.id}">Record restock</button>`:'<span class="badge medium">Open</span>'}</div>`).join('')}</div>`):'';
- document.querySelectorAll('[data-fulfil]').forEach(b=>b.onclick=()=>{
-   const r=restockRequests.find(x=>x.id===+b.dataset.fulfil);
-   const idx=inventory.findIndex(i=>i.item===r.item);
-   r.status='Handled';openStockModal(idx<0?0:idx);
- });
- $('inventoryLogPanel').innerHTML=`<div class="panel-header"><div><h3>Stock Movement Log</h3><p>Every change is recorded against the staff member who made it</p></div></div>`+
-  (inventoryLog.length?`<div class="table-responsive"><table><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Qty</th><th>Recorded by</th><th>Reason</th></tr></thead><tbody>${inventoryLog.slice(0,12).map(l=>`<tr><td>${fmtDT(l.when)}</td><td>${esc(l.item)}</td><td>${l.movement}</td><td>${l.qty}</td><td>${esc(l.by)}</td><td>${esc(l.reason)}</td></tr>`).join('')}</tbody></table></div>`:emptyState('No stock movements recorded.'));
+ $('inventoryStats').innerHTML=statStrip([
+   {label:'Tracked items',value:inventory.length,sub:'in the store room'},
+   {label:'Low stock',value:lowStock().length,sub:'at or below reorder',attn:lowStock().length>0,attr:'data-seg="inventoryFilter" data-value="low" data-render="inventory"',active:f==='low'},
+   {label:'Movements logged',value:inventoryLog.length,sub:'recent activity'},
+   {label:'Restock requests',value:open.length,sub:'from housekeepers',attn:open.length>0&&canEdit}
+ ]);
+ $('inventorySeg').innerHTML=segmented('inventoryFilter',[{value:'all',label:'All items',count:inventory.length},{value:'low',label:'Low stock',count:lowStock().length,dot:'bg-cleaning'}],f,'inventory');
+ const shown=inventory.filter(x=>(f==='all'||x.stock<=x.reorder)&&(!q||`${x.item} ${x.category}`.toLowerCase().includes(q)));
+ $('inventoryTable').innerHTML=shown.map(x=>{
+   const i=inventory.indexOf(x);
+   const low=x.stock<=x.reorder;
+   const pct=Math.min(100,Math.round(x.stock/Math.max(1,x.reorder*2)*100));
+   return `<tr class="${low?'row-warn':''}">
+     <td class="primary-cell" data-label="Item"><span class="cell-main">${esc(x.item)}</span></td><td data-label="Category">${esc(x.category)}</td>
+     <td data-label="Stock"><div class="stock-cell"><strong>${x.stock}</strong><span class="stock-bar${low?' low':''}" aria-hidden="true"><i style="width:${pct}%"></i></span></div></td>
+     <td class="num" data-label="Reorder at">${x.reorder}</td>
+     <td data-label="Status">${low?chip('Low stock','warning',{dot:true}):chip('In stock','success',{dot:true})}</td>
+     <td data-label="Last updated">${fmtDT(x.lastUpdated)}<small>by ${esc(x.lastBy)}</small></td>
+     <td class="actions inv-action-cell" data-label="">${canEdit?`<button class="btn btn-secondary btn-sm" data-stock="${i}" type="button">Update</button>`:'<span class="text-3" style="font-size:var(--fs-sm)">View only</span>'}</td>
+   </tr>`;
+ }).join('')||`<tr><td colspan="7" class="table-empty">${empty('No items match.','',{compact:true,icon:'search'})}</td></tr>`;
+ $('restockRequestPanel').innerHTML=open.length?`<div style="margin-bottom:16px">${card('Restock requests','Raised by housekeepers on the floor',
+   listOf(open.map(r=>listItem({lead:icon('refresh','sm'),leadTone:'warning',title:esc(r.item),sub:`Requested by ${esc(r.by)} · ${fmtDT(r.when)}${r.note?` · “${esc(r.note)}”`:''}`,actions:canEdit?`<button class="btn btn-primary btn-sm" data-fulfil="${r.id}" type="button">Record restock</button>`:chip('Open','warning',{dot:true})}))),
+   '',{flush:true,icon:'refresh',count:open.length,attn:true})}</div>`:'';
+ $('inventoryLogPanel').innerHTML=`<div class="card-head"><div><div class="card-title">${icon('history','sm')}Stock movement log</div><p class="card-sub">Every change is recorded against the staff member who made it</p></div></div>`+
+  (inventoryLog.length?`<div class="table-wrap"><table class="data responsive"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th class="num">Qty</th><th>Recorded by</th><th>Reason</th></tr></thead><tbody>${inventoryLog.slice(0,12).map(l=>`<tr><td data-label="Date">${fmtDT(l.when)}</td><td class="primary-cell" data-label="Item"><span class="cell-main">${esc(l.item)}</span></td><td data-label="Movement">${chip(l.movement,/received|added/i.test(l.movement)?'success':/used|damaged/i.test(l.movement)?'neutral':'info')}</td><td class="num" data-label="Qty">${l.qty}</td><td data-label="Recorded by">${esc(l.by)}</td><td data-label="Reason">${esc(l.reason)}</td></tr>`).join('')}</tbody></table></div>`:`<div class="card-body">${empty('No stock movements recorded.','',{compact:true})}</div>`);
+ bindAll($('inventory'));
 }
 function openStockModal(i){
- if(!canManageInventory())return showToast('Only supervisors and managers can change stock levels.');
+ if(!canManageInventory())return warn('Only supervisors and managers can change stock levels.');
  $('inventoryItem').innerHTML=inventory.map((x,idx)=>`<option value="${idx}">${x.item} · current ${x.stock}</option>`).join('');
  $('inventoryItem').value=String(i);
- $('inventoryQty').value=1;$('inventoryReason').value='';
+ $('inventoryQty').value=1;$('inventoryReason').value='';clearValidation($('inventoryUpdateForm'));
  $('inventoryActor').textContent=`${currentUser.name} · ${currentUser.label}`;
+ updateStockPreview();
  openBackdrop('inventoryUpdateBackdrop');
+}
+// Mirrors the movement maths in the submit handler, for live feedback only.
+function updateStockPreview(){
+ const item=inventory[+$('inventoryItem').value];if(!item)return;
+ const qty=Math.max(0,+$('inventoryQty').value||0),mv=$('inventoryMovement').value;
+ const after=mv==='Stock received'?item.stock+qty:(mv==='Stock used'||mv==='Damaged / written off')?Math.max(0,item.stock-qty):qty;
+ $('inventoryQtyLabel').textContent=mv==='Physical count'?'Counted quantity':'Quantity';
+ const low=after<=item.reorder;
+ $('inventoryPreview').className=`full pay-summary ${low?'due':'settled'}`;
+ $('inventoryPreview').innerHTML=`<span>${item.item}: ${item.stock} → after this movement${low?` · <strong>at or below reorder level (${item.reorder})</strong>`:''}</span><strong>${after}</strong>`;
 }
 
 /* ============================================================
-   TRANSACTIONS
+   PAYMENTS LEDGER
    ============================================================ */
 function filteredTransactions(){
  const range=$('transactionRange').value,m=$('transactionMethod').value,ty=$('transactionType').value;
@@ -1540,32 +2148,42 @@ function filteredTransactions(){
    return ok&&(m==='all'||t.method===m)&&(ty==='all'||t.type===ty);
  }).sort((a,b)=>b.when.localeCompare(a.when));
 }
+const TX_TONE=t=>t.amount<0?'danger':/deposit forfeited/i.test(t.type)?'neutral':/damage|additional/i.test(t.type)?'warning':/deposit/i.test(t.type)?'info':'success';
 function renderTransactions(){
  const types=[...new Set(transactions.map(t=>t.type))];
- if($('transactionType').options.length!==types.length+1)
+ if($('transactionType').options.length!==types.length+1){
+   const keep=$('transactionType').value;
    $('transactionType').innerHTML='<option value="all">All types</option>'+types.map(t=>`<option>${t}</option>`).join('');
+   $('transactionType').value=types.includes(keep)?keep:'all';
+ }
  const custom=$('transactionRange').value==='custom';
  $('transactionFrom').classList.toggle('hidden-filter',!custom);
  $('transactionTo').classList.toggle('hidden-filter',!custom);
  const list=filteredTransactions();
  const inflow=list.filter(t=>t.amount>0).reduce((a,t)=>a+t.amount,0);
  const outflow=list.filter(t=>t.amount<0).reduce((a,t)=>a+t.amount,0);
- $('transactionStats').innerHTML=statCards([
-   ['Transactions',list.length,'in this period'],
-   ['Collected',money(inflow),'payments received'],
-   ['Refunds',money(outflow),'returned to guests'],
-   ['Net total',money(inflow+outflow),'collected minus refunds']
+ $('transactionStats').innerHTML=statStrip([
+   {label:'Transactions',value:list.length,sub:'in this period'},
+   {label:'Collected',value:money(inflow),sub:'payments received'},
+   {label:'Refunds',value:money(outflow),sub:'returned to guests'},
+   {label:'Net total',value:money(inflow+outflow),sub:'collected minus refunds'}
  ]);
- $('transactionTable').innerHTML=list.map(t=>`<tr>
-   <td>${fmtDT(t.when)}</td><td>${t.ref}</td><td>${esc(t.guest)}</td><td>${t.room}</td>
-   <td>${t.type}</td><td>${t.method}</td><td>${esc(t.staff)}</td>
-   <td class="amt ${t.amount<0?'neg':''}">${money(t.amount)}</td>
- </tr>`).join('')||`<tr><td colspan="8">${emptyState('No transactions in this period.')}</td></tr>`;
+ $('transactionTable').innerHTML=list.map(t=>{const res=reservations.find(r=>r.ref===t.ref);return `<tr>
+   <td data-label="Date">${fmtDT(t.when)}</td>
+   <td class="primary-cell" data-label="Guest"><span class="cell-main">${esc(t.guest)}</span></td>
+   <td data-label="Reference">${res&&can('reservations')?`<button class="link-btn ref" data-view-res="${t.ref}" type="button">${t.ref}</button>`:`<span class="ref">${t.ref}</span>`}</td>
+   <td data-label="Room">${t.room}</td>
+   <td data-label="Type">${chip(t.type,TX_TONE(t))}</td><td data-label="Method">${t.method}</td><td data-label="Processed by">${esc(t.staff)}</td>
+   <td class="amt num ${t.amount<0?'neg':''}" data-label="Amount">${money(t.amount)}</td>
+ </tr>`;}).join('')||`<tr><td colspan="8" class="table-empty">${empty('No transactions in this period.','Try a wider date range.',{icon:'card'})}</td></tr>`;
+ bindAll($('transactions'));
 }
 
 /* ============================================================
    REPORTS
    ============================================================ */
+let reportTab='overview';
+const REPORT_TABS=[['overview','Overview','chart'],['revenue','Revenue','wallet'],['housekeeping','Housekeeping','sparkle'],['maintenance','Maintenance & inventory','tool'],['requests','Guest requests','bell-desk'],['inspections','Inspections & damages','shield']];
 function renderReports(){
  const days=+$('reportPeriod').value;
  const since=dayOff(-(days-1));
@@ -1575,8 +2193,11 @@ function renderReports(){
  const byMethod={},byType={};
  inRange.forEach(t=>{byMethod[t.method]=(byMethod[t.method]||0)+t.amount;byType[t.type]=(byType[t.type]||0)+t.amount;});
 
+ // NOTE: the prototype keeps no daily occupancy history, so this series is
+ // simulated around today's live rate (unchanged from v11) and labelled as such.
  const occSeries=[];
- for(let i=days-1;i>=0;i--){const d=dayOff(-i);occSeries.push([d.toLocaleDateString('en-PH',{weekday:'short'}),Math.max(20,Math.min(95,occupancyRate()+((i*37)%25)-12))]);}
+ for(let i=days-1;i>=0;i--){const d=dayOff(-i);occSeries.push([days>7?d.getDate():d.toLocaleDateString('en-PH',{weekday:'short'}),Math.max(20,Math.min(95,occupancyRate()+((i*37)%25)-12))]);}
+ occSeries[occSeries.length-1][1]=occupancyRate();
 
  const completed=tasks.filter(t=>t.status==='Completed');
  const hkPerf=housekeepers.map(h=>{
@@ -1590,37 +2211,42 @@ function renderReports(){
  const usage={};inventoryLog.filter(l=>l.movement==='Stock used').forEach(l=>usage[l.item]=(usage[l.item]||0)+l.qty);
  const reqItems={};guestRequests.forEach(r=>r.items.forEach(i=>reqItems[i.name]=(reqItems[i.name]||0)+i.qty));
  const reqDone=guestRequests.filter(r=>r.status==='Delivered').length;
+ const metrics=list=>`<div class="metric-rows">${list.map(m=>`<div><span>${m[0]}</span><strong>${m[1]}</strong></div>`).join('')}</div>`;
+ const roomDist=distBars([['Available',roomCount('available'),'available'],['Occupied',roomCount('occupied'),'occupied'],['Cleaning',roomCount('cleaning'),'cleaning'],['Maintenance',roomCount('maintenance'),'maintenance']]);
 
- $('reportsContent').innerHTML=
-  statCards([
-   ['Occupancy rate',occupancyRate()+'%',`${roomCount('occupied')} of ${rooms.length} rooms`],
-   ['Revenue',money(revenue),`last ${days} days`],
-   ['Rooms cleaned',completed.length,'approved by supervisor'],
-   ['Repairs resolved',resolved.length,'all time']
-  ])
- +`<div class="dashboard-grid">
-   ${panel('Occupancy Trend',`Daily occupancy, last ${days} days`,barChart(occSeries.map(d=>[d[0],d[1],d[1]+'%'])))}
-   ${panel('Revenue Summary',`Payments received over the last ${days} days`,
-     `<div class="metric-list tight"><div><span>Gross collected</span><strong>${money(revenue)}</strong></div><div><span>Refunds</span><strong>${money(refunds)}</strong></div><div><span>Net revenue</span><strong>${money(revenue+refunds)}</strong></div><div><span>Average per transaction</span><strong>${money(inRange.length?revenue/inRange.length:0)}</strong></div></div>
-      <h4 class="sub-head">By payment method</h4>${distBars(Object.entries(byMethod).map(([k,v])=>[k,Math.abs(v)]))}`)}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Room Status Distribution','Current state of every room',distBars([['Available',roomCount('available'),'available'],['Occupied',roomCount('occupied'),'occupied'],['Cleaning',roomCount('cleaning'),'cleaning'],['Maintenance',roomCount('maintenance'),'maintenance']]))}
-   ${panel('Revenue by Type','Where the money came from',distBars(Object.entries(byType).map(([k,v])=>[k,Math.abs(v)])))}
- </div>
- <div class="mt">${panel('Housekeeping Performance','Task completion and inspection pass rate by staff',
-   `<div class="table-responsive"><table><thead><tr><th>Housekeeper</th><th>Assigned</th><th>Completed</th><th>Returned for recleaning</th><th>First-pass rate</th></tr></thead><tbody>${hkPerf.map(h=>`<tr><td><strong>${h.name}</strong></td><td>${h.assigned}</td><td>${h.done}</td><td>${h.rework}</td><td>${h.done?`<span class="badge ${h.pass>=90?'low':h.pass>=70?'medium':'high'}">${h.pass}%</span>`:'—'}</td></tr>`).join('')}</tbody></table></div>`)}</div>
- <div class="dashboard-grid mt">
-   ${panel('Maintenance Statistics','Work order volume and outcomes',
-     `<div class="metric-list tight"><div><span>Total work orders</span><strong>${tickets.length}</strong></div><div><span>Resolved</span><strong>${resolved.length}</strong></div><div><span>Still open</span><strong>${openTickets().length}</strong></div><div><span>High priority open</span><strong>${openTickets().filter(t=>t.priority==='High').length}</strong></div></div>
-      <h4 class="sub-head">By category</h4>${distBars(Object.entries(byCat))}`)}
-   ${panel('Inventory Usage','Consumption and items needing reorder',
-     Object.keys(usage).length?`${distBars(Object.entries(usage))}<h4 class="sub-head">Below reorder level</h4>${lowStock().length?`<div class="list-rows">${lowStock().map(i=>`<div class="list-row"><div class="lr-main"><strong>${esc(i.item)}</strong><p>${i.category}</p></div><div class="lr-side"><strong class="warn-text">${i.stock}</strong><small>reorder at ${i.reorder}</small></div></div>`).join('')}</div>`:emptyState('All items are above reorder level.')}`:emptyState('No usage recorded yet.'))}
- </div>
- <div class="mt">${panel('Guest Request Summary','Most requested items and fulfilment rate',
-   `<div class="metric-list tight"><div><span>Total requests</span><strong>${guestRequests.length}</strong></div><div><span>Delivered</span><strong>${reqDone}</strong></div><div><span>Fulfilment rate</span><strong>${guestRequests.length?Math.round(reqDone/guestRequests.length*100):0}%</strong></div></div>
-    <h4 class="sub-head">Most requested items</h4>${Object.keys(reqItems).length?distBars(Object.entries(reqItems)):emptyState('No requests logged.')}`)}</div>`
- +incidentReports();
+ const sections={
+   overview:kpis([
+     {label:'Occupancy rate',value:occupancyRate()+'%',sub:`${roomCount('occupied')} of ${rooms.length} rooms`,icon:'bed'},
+     {label:'Revenue',value:money(revenue),sub:`last ${days} days`,icon:'wallet'},
+     {label:'Rooms cleaned',value:completed.length,sub:'approved by supervisor',icon:'sparkle'},
+     {label:'Repairs resolved',value:resolved.length,sub:'all time',icon:'tool'}
+   ])+`<div class="report-grid">
+     ${card('Occupancy trend',`Daily occupancy, last ${days} days`,barChart(occSeries.map(d=>[d[0],d[1],d[1]+'%']))+`<p class="chart-note">${icon('info','xs')}Illustrative trend: the prototype doesn't store daily occupancy history, so earlier days are simulated around today's live rate. Today's bar is live.</p>`,'',{icon:'trend'})}
+     ${card('Room status distribution','Current state of every room',roomDist,'',{icon:'grid'})}
+   </div>`,
+   revenue:`<div class="report-grid">
+     ${card('Revenue summary',`Payments received over the last ${days} days`,metrics([['Gross collected',money(revenue)],['Refunds',money(refunds)],['Net revenue',money(revenue+refunds)],['Average per transaction',money(inRange.length?revenue/inRange.length:0)]])+`<h3 class="sub-head">By payment method</h3>${distBars(Object.entries(byMethod).map(([k,v])=>[k,Math.abs(v),'',money(v)]))}`,'',{icon:'wallet'})}
+     ${card('Revenue by type','Where the money came from',distBars(Object.entries(byType).map(([k,v])=>[k,Math.abs(v),'',money(v)])),'',{icon:'chart'})}
+     ${card(`Daily revenue · last ${Math.min(days,14)} days`,'Net of refunds, from the transaction ledger',barChart(revenueSeries(Math.min(days,14)).map(d=>[d.label,d.value,money(d.value)])),'',{icon:'trend',cls:'span-2'})}
+   </div>`,
+   housekeeping:`<div class="report-grid">
+     ${card('Housekeeping performance','Task completion and inspection pass rate by staff',`<div class="table-wrap"><table class="data responsive"><thead><tr><th>Housekeeper</th><th class="num">Assigned</th><th class="num">Completed</th><th class="num">Returned for recleaning</th><th>First-pass rate</th></tr></thead><tbody>${hkPerf.map(h=>`<tr><td class="primary-cell" data-label="Housekeeper"><span class="cell-main">${h.name}</span></td><td class="num" data-label="Assigned">${h.assigned}</td><td class="num" data-label="Completed">${h.done}</td><td class="num" data-label="Recleaned">${h.rework}</td><td data-label="First-pass">${h.done?chip(h.pass+'%',h.pass>=90?'success':h.pass>=70?'warning':'danger'):'<span class="text-3">—</span>'}</td></tr>`).join('')}</tbody></table></div>`,'',{icon:'users',flush:true,cls:'span-2'})}
+     ${card('Throughput','Current shift',progressRow('Rooms completed',completed.length,tasks.length)+progressRow('Awaiting inspection',readyForInspection().length,tasks.length)+progressRow('Passed first inspection',completed.filter(t=>!t.inspection?.reworked).length,completed.length||1),'',{icon:'trend'})}
+     ${card('Workload','Active tasks per housekeeper',workloadBars(),'',{icon:'users'})}
+   </div>`,
+   maintenance:`<div class="report-grid">
+     ${card('Maintenance statistics','Work order volume and outcomes',metrics([['Total work orders',tickets.length],['Resolved',resolved.length],['Still open',openTickets().length],['High priority open',openTickets().filter(t=>t.priority==='High').length]])+`<h3 class="sub-head">By category</h3>${distBars(Object.entries(byCat))}`,'',{icon:'tool'})}
+     ${card('Inventory usage','Consumption and items needing reorder',Object.keys(usage).length?`${distBars(Object.entries(usage))}<h3 class="sub-head">Below reorder level</h3>${lowStock().length?`<div class="card flush">${listOf(lowStock().map(i=>listItem({title:esc(i.item),sub:i.category,meta:`<span class="warn-text">${i.stock}</span><small>reorder at ${i.reorder}</small>`})))}</div>`:empty('All items are above reorder level.','',{compact:true,ok:true})}`:empty('No usage recorded yet.'),'',{icon:'package'})}
+   </div>`,
+   requests:`<div class="report-grid">
+     ${card('Guest request summary','Volume and fulfilment rate',metrics([['Total requests',guestRequests.length],['Delivered',reqDone],['Fulfilment rate',`${guestRequests.length?Math.round(reqDone/guestRequests.length*100):0}%`]]),'',{icon:'bell-desk'})}
+     ${card('Most requested items','Quantity requested',Object.keys(reqItems).length?distBars(Object.entries(reqItems).sort((a,b)=>b[1]-a[1])):empty('No requests logged.'),'',{icon:'chart'})}
+   </div>`,
+   inspections:incidentReports()
+ };
+ $('reportTabs').innerHTML=REPORT_TABS.map(([k,l,ic])=>`<button class="tab${k===reportTab?' active':''}" role="tab" aria-selected="${k===reportTab}" data-report-tab="${k}" type="button">${icon(ic,'sm')}${l}</button>`).join('');
+ $('reportsContent').innerHTML=REPORT_TABS.map(([k])=>`<div data-report-section="${k}" role="tabpanel"${k===reportTab?'':' hidden'}>${sections[k]}</div>`).join('');
+ bindAll($('reports'));
 }
 function incidentReports(){
  const damaged=incidents.filter(i=>i.category==='Damaged Item');
@@ -1635,28 +2261,26 @@ function incidentReports(){
  const topItems=Object.entries(byItem).sort((a,b)=>b[1]-a[1]).slice(0,6);
  // Security deposit transactions
  const depositTx=transactions.filter(t=>['Deposit refund','Deposit forfeited','Damage charge'].includes(t.type));
- return `<div class="dashboard-grid mt">
-   ${panel('Damage Incidents','Damage reports and their financial recovery',
-     `<div class="metric-list tight"><div><span>Total incidents</span><strong>${incidents.length}</strong></div><div><span>Damaged items</span><strong>${damaged.length}</strong></div><div><span>Total charged</span><strong>${money(totalCharged)}</strong></div><div><span>Recovered</span><strong>${money(recovered)}</strong></div><div><span>Waived</span><strong>${money(waived)}</strong></div></div>
-      <h4 class="sub-head">By status</h4>${distBars([['Pending',incidents.filter(i=>i.status==='Pending').length],['Paid',incidents.filter(i=>i.status==='Paid').length],['Waived',incidents.filter(i=>i.status==='Waived').length]])}`)}
-   ${panel('Missing Items','Items reported missing at checkout',
-     missing.length?`<div class="table-responsive"><table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Cost</th><th>Status</th></tr></thead><tbody>${missing.map(i=>`<tr><td>${esc(i.item)}</td><td>${i.room}</td><td>${i.qty}</td><td>${money(incidentCost(i))}</td><td><span class="badge ${i.status==='Paid'?'low':i.status==='Waived'?'':'medium'}">${i.status}</span></td></tr>`).join('')}</tbody></table></div>`:emptyState('No missing items reported.'))}
- </div>
- <div class="dashboard-grid mt">
-   ${panel('Most Frequently Damaged Rooms','Rooms with the most incidents',topRooms.length?distBars(topRooms.map(([r,c])=>[`Room ${r}`,c])):emptyState('No incidents recorded.'))}
-   ${panel('Most Frequently Damaged Items','Items reported most often',topItems.length?distBars(topItems):emptyState('No incidents recorded.'))}
- </div>
- <div class="mt">${panel('Security Deposit Transactions','Refunds, forfeitures and damage charges',
-   depositTx.length?`<div class="table-responsive"><table><thead><tr><th>Date</th><th>Guest</th><th>Room</th><th>Type</th><th>Amount</th></tr></thead><tbody>${depositTx.map(t=>`<tr><td>${fmtDT(t.when)}</td><td>${esc(t.guest)}</td><td>${t.room}</td><td>${t.type}</td><td class="amt ${t.amount<0?'neg':''}">${money(t.amount)}</td></tr>`).join('')}</tbody></table></div>`:emptyState('No security deposit transactions yet.'))}</div>`;
+ const metrics=list=>`<div class="metric-rows">${list.map(m=>`<div><span>${m[0]}</span><strong>${m[1]}</strong></div>`).join('')}</div>`;
+ return `<div class="report-grid">
+   ${card('Damage incidents','Damage reports and their financial recovery',metrics([['Total incidents',incidents.length],['Damaged items',damaged.length],['Total charged',money(totalCharged)],['Recovered',money(recovered)],['Waived',money(waived)]])+`<h3 class="sub-head">By status</h3>${distBars([['Pending',incidents.filter(i=>i.status==='Pending').length],['Paid',incidents.filter(i=>i.status==='Paid').length],['Waived',incidents.filter(i=>i.status==='Waived').length]])}`,'',{icon:'alert'})}
+   ${card('Missing items','Items reported missing at checkout',missing.length?`<div class="table-wrap"><table class="data responsive"><thead><tr><th>Item</th><th>Room</th><th class="num">Qty</th><th class="num">Cost</th><th>Status</th></tr></thead><tbody>${missing.map(i=>`<tr><td class="primary-cell" data-label="Item"><span class="cell-main">${esc(i.item)}</span></td><td data-label="Room">${i.room}</td><td class="num" data-label="Qty">${i.qty}</td><td class="num" data-label="Cost">${money(incidentCost(i))}</td><td data-label="Status">${chip(i.status,INC_TONE[i.status],{dot:true})}</td></tr>`).join('')}</tbody></table></div>`:`<div class="card-body">${empty('No missing items reported.','',{compact:true,ok:true})}</div>`,'',{icon:'search',flush:true})}
+   ${card('Most frequently damaged rooms','Rooms with the most incidents',topRooms.length?distBars(topRooms.map(([r,c])=>[`Room ${r}`,c])):empty('No incidents recorded.'),'',{icon:'grid'})}
+   ${card('Most frequently damaged items','Items reported most often',topItems.length?distBars(topItems):empty('No incidents recorded.'),'',{icon:'box'})}
+   ${card('Security deposit transactions','Refunds, forfeitures and damage charges',depositTx.length?`<div class="table-wrap"><table class="data responsive"><thead><tr><th>Date</th><th>Guest</th><th>Room</th><th>Type</th><th class="amt-head">Amount</th></tr></thead><tbody>${depositTx.map(t=>`<tr><td data-label="Date">${fmtDT(t.when)}</td><td class="primary-cell" data-label="Guest"><span class="cell-main">${esc(t.guest)}</span></td><td data-label="Room">${t.room}</td><td data-label="Type">${chip(t.type,TX_TONE(t))}</td><td class="amt num ${t.amount<0?'neg':''}" data-label="Amount">${money(t.amount)}</td></tr>`).join('')}</tbody></table></div>`:`<div class="card-body">${empty('No security deposit transactions yet.','They appear when the front desk completes a checkout.',{compact:true})}</div>`,'',{icon:'shield',flush:true,cls:'span-2'})}
+ </div>`;
 }
 
 /* ============================================================
-   NOTIFICATIONS & ATTENDANCE
+   NOTIFICATIONS
    ============================================================ */
 function renderNotifications(){
  const list=notifications.filter(n=>n.roles.includes(currentUser.role));
- $('notificationList').innerHTML=list.length?list.map(n=>`<div class="notification-item ${n.unread?'unread':''}"><strong>${esc(n.title)}</strong><p>${esc(n.text)}</p><small>${fmtTime(n.when)}</small></div>`).join(''):emptyState('No notifications right now.');
- $('notificationDot').style.display=list.some(n=>n.unread)?'block':'none';
+ $('notificationList').innerHTML=list.length?list.map(n=>`<button type="button" class="notification-item ${n.unread?'unread':''}" data-notif="${n.id}"><span class="n-dot" aria-hidden="true"></span><span><strong>${esc(n.title)}</strong><p>${esc(n.text)}</p><small>${fmtTime(n.when)}${n.unread?' · New':''}</small></span></button>`).join(''):`<div class="card-body">${empty('You’re all caught up.','',{compact:true,ok:true})}</div>`;
+ const unread=list.filter(n=>n.unread).length;
+ $('notificationDot').style.display=unread?'block':'none';
+ $('notificationButton').setAttribute('aria-label',unread?`Notifications, ${unread} unread`:'Notifications');
+ $('notificationList').querySelectorAll('[data-notif]').forEach(b=>b.onclick=e=>{e.stopPropagation();const n=notifications.find(x=>x.id===+b.dataset.notif);if(n){n.unread=false;renderNotifications();}});
 }
 
 /* ============================================================
@@ -1666,28 +2290,100 @@ function downloadCSV(name,rows){
  const csv=rows.map(r=>r.map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')).join('\n');
  const a=document.createElement('a');
  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
- a.download=name;a.click();URL.revokeObjectURL(a.href);
+ a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),500);
  showToast(`${name} downloaded.`);
 }
+
+/* ============================================================
+   CENTRAL ACTION BINDING
+   Every contextual action in rendered markup is a data-attribute.
+   bindAll() assigns (not adds) handlers, so re-rendering never
+   duplicates listeners. Buttons inside clickable rows stop the row
+   click from also firing.
+   ============================================================ */
+const ACTIONS=[
+ ['data-go',el=>go(el.dataset.go)],
+ ['data-dash-assign',()=>openAssignModal()],
+ ['data-dash-newres',()=>openReservationModal()],
+ ['data-desk-tab',el=>openDeskTab(el.dataset.deskTab)],
+ ['data-checkin-res',el=>openCheckinFor(el.dataset.checkinRes)],
+ ['data-checkout-room',el=>openCheckoutFor(el.dataset.checkoutRoom)],
+ ['data-open-res',el=>openReservationContext(el.dataset.openRes)],
+ ['data-view-res',el=>viewReservation(el.dataset.viewRes)],
+ ['data-res-filter',el=>{$('reservationStatusFilter').value=$('reservationStatusFilter').value===el.dataset.resFilter?'all':el.dataset.resFilter;renderReservations();}],
+ ['data-open-inspection',el=>openInspectionFor(el.dataset.openInspection)],
+ ['data-open-ticket',el=>openTicketContext(+el.dataset.openTicket)],
+ ['data-task-advance',el=>advanceTask(+el.dataset.taskAdvance)],
+ ['data-inspect',el=>{closeDrawer();openInspect(+el.dataset.inspect);}],
+ ['data-inspect-room',el=>openRoomInspection(el.dataset.inspectRoom)],
+ ['data-reassign',el=>{closeDrawer();openAssignModal(+el.dataset.reassign);}],
+ ['data-assign-room',el=>{closeDrawer();openAssignModal(null,el.dataset.assignRoom);}],
+ ['data-assess',el=>openAssess(+el.dataset.assess)],
+ ['data-ticket',el=>openTicketUpdate(+el.dataset.ticket)],
+ ['data-ticket-log',el=>showTicketLog(+el.dataset.ticketLog)],
+ ['data-report-room',el=>openIssueModal(el.dataset.reportRoom)],
+ ['data-open-room',el=>openRoomDrawer(el.dataset.openRoom)],
+ ['data-walkin-room',el=>openWalkinFor(el.dataset.walkinRoom)],
+ ['data-transfer-from',el=>transferFromDrawer(el.dataset.transferFrom)],
+ ['data-incident',el=>showIncident(el.dataset.incident)],
+ ['data-lf-view',el=>showLostItem(+el.dataset.lfView)],
+ ['data-release',el=>releaseLostItem(+el.dataset.release)],
+ ['data-stock',el=>openStockModal(+el.dataset.stock)],
+ ['data-fulfil',el=>{const r=restockRequests.find(x=>x.id===+el.dataset.fulfil);if(!r)return;const idx=inventory.findIndex(i=>i.item===r.item);r.status='Handled';openStockModal(idx<0?0:idx);$('inventoryMovement').value='Stock received';$('inventoryReason').value=`Restock requested by ${r.by}`;updateStockPreview();renderInventory();renderNavBadges();}],
+ ['data-req-advance',el=>{const r=guestRequests.find(x=>x.id===+el.dataset.reqAdvance);if(!r)return;r.status=r.status==='Pending'?'In delivery':'Delivered';renderAll();showToast(`Request for Room ${r.room} marked ${r.status.toLowerCase()}.`);}],
+ ['data-pick-checkin',el=>selectCheckinReservation(el.dataset.pickCheckin)],
+ ['data-pick-checkout',el=>selectCheckoutRoom(el.dataset.pickCheckout)],
+ ['data-seg',el=>{$(el.dataset.seg).value=el.dataset.value;({rooms:renderRooms,inspection:renderInspections,incidents:renderIncidents,maintenance:renderTickets,requests:renderRequests,lostfound:renderLostFound,inventory:renderInventory})[el.dataset.render]?.();}],
+ ['data-report-tab',el=>{reportTab=el.dataset.reportTab;document.querySelectorAll('[data-report-tab]').forEach(b=>{const on=b===el;b.classList.toggle('active',on);b.setAttribute('aria-selected',on);});document.querySelectorAll('[data-report-section]').forEach(s=>s.hidden=s.dataset.reportSection!==reportTab);}]
+];
+function bindAll(scope=document){
+ ACTIONS.forEach(([attr,fn])=>scope.querySelectorAll(`[${attr}]`).forEach(el=>{
+   if(el.tagName==='FORM')return;
+   el.onclick=e=>{if(el.tagName!=='TR'&&el.closest('[data-rowclick]'))e.stopPropagation();fn(el,e);};
+   if(el.tagName==='TR')el.onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target===el){e.preventDefault();fn(el,e);}};
+ }));
+}
+function bindDashActions(){bindAll($('roleDashboard'));}
+function bindContextActions(scope=document){bindAll(scope);}
 
 /* ============================================================
    EVENT WIRING
    ============================================================ */
 function wire(){
  initLogin();
- $('openLogin').onclick=()=>{$('landingScreen').classList.add('hidden');$('loginScreen').classList.remove('hidden');$('employeePin').focus();};
- $('backToLanding').onclick=()=>{$('loginScreen').classList.add('hidden');$('landingScreen').classList.remove('hidden');};
- $('employeePin').oninput=()=>$('loginError').classList.add('hidden');
+ $('employeePin').oninput=()=>{$('loginError').classList.add('hidden');$('employeePin').setAttribute('aria-invalid','false');$('employeePin').value=$('employeePin').value.replace(/\D/g,'').slice(0,4);};
  $('staffLoginForm').onsubmit=e=>{e.preventDefault();doLogin($('employeePin').value);};
  $('switchUser').onclick=()=>{
-   currentUser=null;isTimedIn=false;document.body.className='logged-out';
-   $('landingScreen').classList.remove('hidden');$('loginScreen').classList.add('hidden');
+   closeAllOverlays();$('toastRegion').innerHTML='';
+   currentUser=null;isTimedIn=false;
+   document.body.classList.remove('logged-in','nav-open');document.body.classList.add('logged-out');
    $('employeePin').value='';$('notificationPanel').classList.remove('show');
+   document.title='SIROMS · Siesta Spaces';
+   setTimeout(()=>$('employeePin').focus(),30);
  };
- document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>go(b.dataset.page));
- $('menuButton').onclick=()=>$('sidebar').classList.toggle('open');
+ document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>{
+   const pages=(b.dataset.pages||b.dataset.page).split(' ');
+   go(pages.find(can)||b.dataset.page);
+ });
+ $('menuButton').onclick=()=>document.body.classList.contains('nav-open')?closeNav():openNav();
+ $('sidebarScrim').onclick=closeNav;
+ $('sidebarCollapse').onclick=()=>{
+   const on=!document.body.classList.contains('nav-collapsed');
+   document.body.classList.toggle('nav-collapsed',on);
+   $('sidebarCollapse').setAttribute('aria-label',on?'Expand sidebar':'Collapse sidebar');
+   try{localStorage.setItem('siroms.navCollapsed',on?'1':'0');}catch(_){}
+ };
+ try{if(localStorage.getItem('siroms.navCollapsed')==='1')document.body.classList.add('nav-collapsed');}catch(_){}
  document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeBackdrop(b.dataset.close));
- document.querySelectorAll('.modal-backdrop').forEach(b=>b.onclick=e=>{if(e.target===b)b.classList.remove('show');});
+ document.querySelectorAll('.modal-backdrop,.drawer-backdrop').forEach(b=>b.onclick=e=>{if(e.target===b)closeBackdrop(b.id);});
+ document.addEventListener('keydown',e=>{
+   if(e.key==='Escape'){
+     if(overlayStack.length){e.preventDefault();closeBackdrop(overlayStack[overlayStack.length-1]);return;}
+     if($('notificationPanel').classList.contains('show')){$('notificationPanel').classList.remove('show');$('notificationButton').setAttribute('aria-expanded','false');$('notificationButton').focus();return;}
+     if(document.body.classList.contains('nav-open'))closeNav();
+   }
+   if(e.key==='Tab'&&overlayStack.length)trapFocus(e);
+ });
 
  $('quickAction').onclick=()=>({
    frontdesk:openReservationModal,supervisor:()=>openAssignModal(),
@@ -1701,32 +2397,26 @@ function wire(){
  });
 
  // Rooms
- $('floorFilter').onchange=renderRooms;$('statusFilter').onchange=renderRooms;
+ $('floorFilter').onchange=renderRooms;$('roomSearch').oninput=renderRooms;
 
- // Guest transactions
+ // Front desk
  wireTransactionForms();
- document.querySelectorAll('[data-transaction]').forEach(b=>b.onclick=()=>{
-   document.querySelectorAll('[data-transaction]').forEach(x=>x.classList.toggle('active',x===b));
-   document.querySelectorAll('.transaction-panel').forEach(p=>p.classList.toggle('active',p.id===b.dataset.transaction));
- });
+ document.querySelectorAll('[data-transaction]').forEach(b=>b.onclick=()=>selectTransactionTab(b.dataset.transaction));
 
  // Housekeeping
  $('assignHousekeepingTask').onclick=()=>openAssignModal();
- $('reportMaintenance').onclick=openIssueModal;
- $('cleaningHistoryBtn').onclick=()=>{
-   $('modalTitle').textContent='Cleaning History';
-   const done=tasks.filter(t=>t.status==='Completed');
-   $('modalContent').innerHTML=done.length?`<div class="table-responsive"><table><thead><tr><th>Room</th><th>Task</th><th>Housekeeper</th><th>Inspection</th><th>Notes</th></tr></thead><tbody>${done.map(t=>`<tr><td><strong>${t.room}</strong></td><td>${t.type}</td><td>${t.staff}</td><td><span class="badge ${t.inspection?.reworked?'medium':'low'}">${t.inspection?.reworked?'Passed after recleaning':'Passed'}</span></td><td>${esc(t.inspection?.note)||'—'}</td></tr>`).join('')}</tbody></table></div>`:emptyState('No completed rooms yet.');
-   openBackdrop('modalBackdrop');
- };
+ $('reportMaintenance').onclick=()=>openIssueModal();
+ $('cleaningHistoryBtn').onclick=showCleaningHistory;
  $('assignTaskForm').onsubmit=e=>{
    e.preventDefault();
    const room=$('assignRoom').value,staff=$('assignStaff').value;
+   if(!room)return warn('Choose a room to assign.');
    const existingId=$('assignTaskForm').dataset.taskId;
    if(existingId){
      const t=tasks.find(x=>x.id===+existingId);
      if(t){t.staff=staff;t.priority=$('assignPriority').value;t.type=$('assignType').value;t.note=$('assignNote').value||t.note;}
-     showToast(`Room ${room} reassigned to ${staff}.`);
+     notify(['housekeeper'],'New task assigned',`Room ${room} · ${$('assignType').value}`);
+     showToast(`Room ${room} assigned to ${staff}.`);
    }else{
      tasks.unshift({id:nextId(),room,staff,priority:$('assignPriority').value,type:$('assignType').value,note:$('assignNote').value,status:'Assigned',assignedAt:nowISO()});
      notify(['housekeeper'],'New task assigned',`Room ${room} · ${$('assignType').value}`);
@@ -1739,23 +2429,23 @@ function wire(){
  $('inspectReject').onclick=()=>finishInspection(false);
 
  // Room inspections (checkout)
- $('inspStatusFilter').onchange=renderInspections;
  document.querySelectorAll('[data-add-finding]').forEach(b=>b.onclick=()=>{
    inspectFindings.push({category:b.dataset.addFinding,item:'',qty:1,cost:0,desc:'',remarks:'',photos:0});
    renderInspectFindings();
+   setTimeout(()=>document.querySelector(`[data-f-item="${inspectFindings.length-1}"]`)?.focus(),20);
  });
  $('roomInspectForm').onsubmit=e=>{e.preventDefault();submitRoomInspection();};
 
  // Incidents
- $('incidentStatusFilter').onchange=renderIncidents;
  $('incidentCategoryFilter').onchange=renderIncidents;
  $('exportIncidents').onclick=()=>downloadCSV('SIROMS_Incidents.csv',[['Incident ID','Date','Room','Booking','Guest','Reported by','Category','Item','Qty','Cost','Status','Remarks'],...incidents.map(i=>[i.id,fmtDT(i.date),i.room,i.booking,i.guest,i.reportedBy,i.category,i.item,i.qty,incidentCost(i),i.status,i.remarks])]);
 
  // Maintenance
- ['ticketStatusFilter','ticketPriorityFilter','ticketCategoryFilter'].forEach(id=>$(id).onchange=renderTickets);
+ ['ticketPriorityFilter','ticketCategoryFilter'].forEach(id=>$(id).onchange=renderTickets);
  $('maintenanceLogBtn').onclick=showRoomLogs;
  $('issueForm').onsubmit=e=>{
    e.preventDefault();
+   if(!validateRequired(e.target))return;
    const room=$('issueRoom').value.replace('Room ','');
    const desc=$('issueDescription').value.trim();
    tickets.unshift({id:nextId(),room,category:$('issueCategory').value,issue:desc.split('.')[0].slice(0,60),priority:null,impact:null,status:'Awaiting assessment',stage:'assessment',eta:'',assignedTo:'',reportedBy:currentUser.name,reportedAt:nowISO(),parts:'',history:[{when:nowISO(),who:currentUser.name,what:'Issue reported to supervisor'}]});
@@ -1776,6 +2466,7 @@ function wire(){
  };
  $('maintenanceUpdateForm').onsubmit=e=>{
    e.preventDefault();
+   if(!validateRequired(e.target))return;
    const t=tickets.find(x=>x.id===+$('maintenanceTicketId').value);if(!t)return;
    t.status=$('maintenanceStatus').value;
    t.eta=$('maintenanceEta').value;
@@ -1805,9 +2496,9 @@ function wire(){
  $('requestForm').onsubmit=e=>{
    e.preventDefault();
    const room=$('requestRoom').value;
-   if(!room)return showToast('No in-house guest to log a request for.');
+   if(!room)return warn('No in-house guest to log a request for.');
    const items=requestItems.map(r=>({name:r.name==='Other'?(r.custom.trim()||'Custom request'):r.name,qty:r.qty,price:r.price}));
-   if(requestItems.some(r=>r.name==='Other'&&!r.custom.trim()))return showToast('Describe the custom item before sending.');
+   if(requestItems.some(r=>r.name==='Other'&&!r.custom.trim())){document.querySelectorAll('[data-r-custom]').forEach(c=>{if(!c.value.trim())c.setAttribute('aria-invalid','true');});return warn('Describe the custom item before sending.');}
    const charge=items.reduce((a,i)=>a+i.price*i.qty,0);
    guestRequests.unshift({id:nextId(),room,guest:$('requestGuest').value,items,notes:$('requestNotes').value,status:'Pending',createdAt:nowISO(),by:currentUser.name});
    const r=rooms.find(x=>x.n===room);
@@ -1823,39 +2514,45 @@ function wire(){
  };
 
  // Lost & found
- $('addLostItem').onclick=()=>{$('dateFound').value=nowISO();openBackdrop('lostItemModalBackdrop');};
- $('lostSearch').oninput=renderLostFound;$('lostStatusFilter').onchange=renderLostFound;
+ $('addLostItem').onclick=()=>{clearValidation($('lostItemForm'));$('dateFound').value=nowISO();openBackdrop('lostItemModalBackdrop');};
+ $('lostSearch').oninput=renderLostFound;
  $('lostItemForm').onsubmit=e=>{
    e.preventDefault();
+   if(!validateRequired(e.target))return;
    lostItems.unshift({id:nextId(),item:$('lostItemName').value,category:$('lostItemCategory').value,location:$('foundLocation').value,condition:$('itemCondition').value,description:$('lostItemDescription').value,status:'Stored',reporter:currentUser.name,when:$('dateFound').value});
-   closeBackdrop('lostItemModalBackdrop');e.target.reset();renderLostFound();
+   closeBackdrop('lostItemModalBackdrop');e.target.reset();renderLostFound();renderNavBadges();
    showToast('Found item recorded and stored at the front desk cabinet.');
  };
 
  // Inventory
  $('openInventoryUpdate').onclick=()=>openStockModal(0);
  $('openAddInventory').onclick=()=>{
-   if(!canManageInventory())return showToast('Only supervisors and managers can add inventory items.');
-   openBackdrop('addInventoryBackdrop');
+   if(!canManageInventory())return warn('Only supervisors and managers can add inventory items.');
+   clearValidation($('addInventoryForm'));openBackdrop('addInventoryBackdrop');
  };
+ $('inventorySearch').oninput=renderInventory;
+ ['inventoryItem','inventoryMovement','inventoryQty'].forEach(id=>$(id).oninput=$(id).onchange=updateStockPreview);
  $('requestRestock').onclick=()=>{
-   $('modalTitle').textContent='Request Restock';
-   $('modalContent').innerHTML=`<p>Housekeepers cannot change stock levels directly. Send a request and your supervisor will record the movement.</p>
-   <form class="form-grid" id="restockForm"><label class="full">Item<select id="restockItem">${inventory.map(i=>`<option>${i.item}</option>`).join('')}</select></label>
-   <label class="full">Note<textarea id="restockNote" placeholder="Example: Only 3 soap sets left on the trolley."></textarea></label>
-   <button class="primary-button full" type="submit">Send Request</button></form>`;
+   $('modalTitle').textContent='Request restock';
+   $('modalDesc').textContent='Housekeepers can’t change stock levels directly. Your supervisor will record the movement.';$('modalDesc').classList.remove('hidden');
+   $('modalContent').innerHTML=`<form class="form-grid" id="restockForm" novalidate><label class="full">Item<select id="restockItem">${inventory.map(i=>`<option>${i.item}</option>`).join('')}</select></label>
+   <label class="full">Note <span class="field-hint">Optional</span><textarea id="restockNote" placeholder="Example: Only 3 soap sets left on the trolley."></textarea></label>
+   <div class="full modal-foot" style="margin:4px -24px -20px"><button class="btn btn-secondary" type="button" id="restockCancel">Cancel</button><button class="btn btn-primary" type="submit">Send request</button></div></form>`;
+   const low=lowStock()[0];if(low)$('restockItem').value=low.item;
    openBackdrop('modalBackdrop');
+   $('restockCancel').onclick=()=>closeBackdrop('modalBackdrop');
    $('restockForm').onsubmit=ev=>{
      ev.preventDefault();
      restockRequests.unshift({id:nextId(),item:$('restockItem').value,by:currentUser.name,when:nowISO(),note:$('restockNote').value,status:'Open'});
      notify(['supervisor'],'Restock requested',`${$('restockItem').value} — requested by ${currentUser.name}`);
-     closeBackdrop('modalBackdrop');renderInventory();
+     closeBackdrop('modalBackdrop');renderInventory();renderNavBadges();
      showToast('Restock request sent to your supervisor.');
    };
  };
  $('inventoryUpdateForm').onsubmit=e=>{
    e.preventDefault();
-   if(!canManageInventory())return showToast('You do not have permission to change stock.');
+   if(!canManageInventory())return warn('You do not have permission to change stock.');
+   if(!validateRequired(e.target))return;
    const item=inventory[+$('inventoryItem').value];
    const qty=Math.max(0,+$('inventoryQty').value||0),mv=$('inventoryMovement').value;
    if(mv==='Stock received')item.stock+=qty;
@@ -1869,6 +2566,8 @@ function wire(){
  };
  $('addInventoryForm').onsubmit=e=>{
    e.preventDefault();
+   if(!canManageInventory())return warn('Only supervisors and managers can add inventory items.');
+   if(!validateRequired(e.target))return;
    inventory.push({item:$('newItemName').value,category:$('newItemCategory').value,stock:+$('newItemStock').value,reorder:+$('newItemReorder').value,lastUpdated:nowISO(),lastBy:currentUser.name});
    inventoryLog.unshift({when:nowISO(),item:$('newItemName').value,movement:'Item added',qty:+$('newItemStock').value,by:currentUser.name,reason:'New item added to inventory'});
    closeBackdrop('addInventoryBackdrop');e.target.reset();renderInventory();
@@ -1895,23 +2594,24 @@ function wire(){
  ]);
 
  // Notifications
- $('notificationButton').onclick=e=>{e.stopPropagation();$('notificationPanel').classList.toggle('show');};
+ $('notificationButton').onclick=e=>{e.stopPropagation();const p=$('notificationPanel');p.classList.toggle('show');$('notificationButton').setAttribute('aria-expanded',p.classList.contains('show'));};
  document.addEventListener('click',e=>{
    const p=$('notificationPanel');
-   if(p.classList.contains('show')&&!p.contains(e.target)&&!$('notificationButton').contains(e.target))p.classList.remove('show');
+   if(p.classList.contains('show')&&!p.contains(e.target)&&!$('notificationButton').contains(e.target)){p.classList.remove('show');$('notificationButton').setAttribute('aria-expanded','false');}
  });
- $('markAllRead').onclick=()=>{notifications.filter(n=>n.roles.includes(currentUser.role)).forEach(n=>n.unread=false);renderNotifications();};
+ $('markAllRead').onclick=e=>{e.stopPropagation();notifications.filter(n=>n.roles.includes(currentUser.role)).forEach(n=>n.unread=false);renderNotifications();};
 
- // Attendance (guarded against double clicks)
- $('attendanceButton').onclick=()=>{
-   if(attendanceLocked)return showToast('Attendance was just updated. Please wait a moment.');
+ // Attendance (guarded against double clicks; confirmation replaces window.confirm)
+ $('attendanceButton').onclick=async()=>{
+   if(attendanceLocked)return warn('Attendance was just updated. Please wait a moment.');
    const now=new Date().toLocaleTimeString('en-PH',{hour:'numeric',minute:'2-digit'});
-   if(!confirm(isTimedIn?`Time out at ${now}? This ends your shift.`:`Time in at ${now}?`))return;
+   const ok=await confirmDialog({title:isTimedIn?'Time out now?':'Time in now?',body:`<p>${isTimedIn?`Record your time-out at <strong>${now}</strong>. This ends your shift.`:`Record your time-in at <strong>${now}</strong>.`}</p>`,confirmLabel:isTimedIn?'Time out':'Time in'});
+   if(!ok)return;
    attendanceLocked=true;$('attendanceButton').disabled=true;
    isTimedIn=!isTimedIn;
-   $('attendanceButton').textContent=isTimedIn?'Time out':'Time in';
    const rec=attendance.find(a=>a.name===currentUser.name);
    if(rec){if(isTimedIn){rec.in=now;rec.out='—';rec.status='On shift';}else{rec.out=now;rec.status='Off shift';}}
+   updateShift();
    showToast(`${isTimedIn?'Time-in':'Time-out'} recorded at ${now}.`);
    if(currentUser.role==='manager')renderDashboard();
    setTimeout(()=>{attendanceLocked=false;$('attendanceButton').disabled=false;},1500);
@@ -1938,6 +2638,8 @@ function renderAll(){
  renderTransactions();
  renderReports();
  renderNotifications();
+ renderSiblingTabs();
+ renderNavBadges();
 }
 
 wire();

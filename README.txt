@@ -1,12 +1,13 @@
 SIROMS — SIESTA SPACES
-Integrated Room Operations Management System (prototype v8)
+Integrated Room Operations Management System (prototype v12 — UI/UX redesign)
 
 HOW TO RUN
 1. Keep index.html, app.js and styles.css in the same folder.
 2. Open index.html in Chrome, Edge or Firefox.
 
 LOGIN
-From the landing page choose "Staff Login" and enter a 4-digit Staff ID.
+The welcome screen and staff login are now one screen. Enter a 4-digit
+Staff ID (or pick one from "Prototype staff IDs").
 The ID determines the role, so there is no department picker.
 
   6767  Anne Reyes     Front Desk
@@ -182,3 +183,71 @@ Verified
     against the deposit, room set to cleaning and a cleaning task created.
   - Swept every button/select/tab across all 5 roles: no dead controls.
   - Broad regression (nav, filters, searches, modals, workflows): 69 checks.
+
+------------------------------------------------------------
+UI/UX REDESIGN (v12)
+------------------------------------------------------------
+Still plain HTML + CSS + vanilla JS. No build step, no network
+dependencies (icons are an inline SVG sprite) — open index.html.
+
+Design system (styles.css)
+  - Brand palette kept verbatim (--bg, --surface, --accent, --sidebar…).
+    Added only accessible tints (--text-2/--text-3, status bg/fg pairs).
+  - Tokens for spacing (4px scale), radii, shadows, type sizes, control
+    heights, overlay widths and focus ring. One component set: buttons,
+    fields, search, tabs, segmented filters, chips, KPI tiles, stat
+    strips, tables (stack into cards on phones), lists, modals, drawer,
+    confirm dialog, toasts, empty states, stepper, timeline, checklists.
+
+Navigation (role-filtered, grouped)
+  Overview: Dashboard · Front office: Front Desk, Reservations, Rooms
+  Room operations: Housekeeping, Inspections (Checkout inspections +
+  Incident reports as tabs), Maintenance · Guest services: Guest
+  Requests, Lost & Found · Back office: Inventory, Payments, Reports.
+  Sidebar collapses on desktop and becomes a drawer below 1024px.
+  Badges show items the signed-in role can act on.
+
+Key workflow changes
+  - Dashboards rebuilt per role around queues with direct actions.
+  - Front Desk: queue of guests on the left, guided workspace on the
+    right. Check-out shows a 4-step stepper (room balance → inspection
+    → deposit settlement → checked out). The primary button explains
+    what's still owed and stays disabled until it's paid (the submit
+    handlers still enforce every rule too). "Full balance" fills the
+    amount in one click.
+  - Reservations and rooms open a detail drawer with the next allowed
+    action. Room transfer moved into the room drawer (with confirm).
+  - Housekeepers get a touch-friendly room list with a "next up" card;
+    supervisors get the board, workload, and an "awaiting assignment"
+    queue.
+  - Inspections page also lists "Inspected — awaiting checkout" and
+    "Checked out" rooms with their next state.
+  - Reports split into tabs; CSV exports unchanged.
+
+Behaviour fixes made during the redesign
+  - Check-in now preselects the reservation's reserved room (or the
+    first available room of the booked type).
+  - Typing an amount no longer resets the adults/children fields.
+  - Supervisor cleaning checklist starts unticked; Approve is enabled
+    only when all items are ticked (rule unchanged, default safer).
+  - Dashboard "+ Assign Task" used to pass the click event as a task
+    id and silently create nothing; fixed.
+  - Waived incidents are no longer deducted from the deposit, and a
+    booking held in Pending Damage Payment is released when a waiver
+    brings the charges within the deposit.
+  - Lost & Found release asks for confirmation ("Ownership verified"
+    must be ticked); an optional claimant name and the releasing staff
+    member are kept on the record.
+  - window.confirm() for Time out replaced by an in-app dialog.
+
+Known limitations (not changed)
+  - Occupancy trend history is simulated (no stored history); the
+    chart is labelled as illustrative. Today's bar is live.
+  - Photos are placeholders (a counter) for inspections; Lost & Found
+    has no photo field yet, though the paper lists photo upload.
+  - Housekeepers have no recorded self-checklist; the checklist is
+    shown as guidance and enforced at supervisor approval.
+  - Reserved-guest check-in does not collect a separate security
+    deposit, but the stay still assumes a ₱1,000 deposit at checkout.
+  - "Mark as paid" on an incident does not record a ledger payment.
+  - "Claim pending" has no action that sets it.
