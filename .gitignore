@@ -1,0 +1,22 @@
+# Secrets — never commit real credentials
+.env
+.env.*
+!.env.example
+backend/.env
+
+# Dependencies and logs
+node_modules/
+npm-debug.log*
+*.log
+
+# OS / editor
+.DS_Store
+__MACOSX/
+Thumbs.db
+
+# Legacy prototype artefacts
+*.dmb
+*.rsc
+*.int
+*.lk
+*.zip

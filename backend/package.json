@@ -1,0 +1,31 @@
+{
+  "name": "siroms-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SIROMS — Siesta Spaces Integrated Room Operations Management System: Express + MongoDB backend",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed.js",
+    "seed:reset": "node scripts/seed.js --reset",
+    "seed:users": "node scripts/seed-users.js",
+    "test": "node --test --test-concurrency=1 test/time.test.js test/api.test.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "connect-mongo": "^6.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.8",
+    "express": "^4.22.3",
+    "express-rate-limit": "^8.7.1",
+    "express-session": "^1.19.0",
+    "helmet": "^8.3.0",
+    "mongoose": "^8.24.6",
+    "zod": "^4.6.7"
+  }
+}
